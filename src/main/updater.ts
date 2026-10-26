@@ -6,7 +6,7 @@ import { autoUpdater } from 'electron-updater'
 import type { UpdateStatus } from '../shared/types'
 
 /** Must match `publish` in electron-builder.yml. */
-export const RELEASE_REPO = 'dabhans/MikroViewer-releases'
+export const RELEASE_REPO = 'dabhans/MikroViewer'
 const RELEASE_PAGE = `https://github.com/${RELEASE_REPO}/releases/latest`
 
 function friendlyError(err: unknown): string {

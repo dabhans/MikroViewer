@@ -56,7 +56,7 @@ Port 8728. The password is sent unencrypted, so only use this on a network you t
 
 ### 2. Install MikroViewer
 
-Run `MikroViewer-Setup-0.2.0.exe`, or use `MikroViewer-0.2.0-portable.exe`, which runs without installation.
+Download the latest version from [Releases](https://github.com/dabhans/MikroViewer/releases). Run `MikroViewer-Setup-<version>.exe`, or use `MikroViewer-<version>-portable.exe`, which runs without installation.
 
 The program is not code-signed, so Windows SmartScreen may show a warning the first time. Choose **More info → Run anyway**.
 
@@ -139,11 +139,15 @@ Then add a router with address `127.0.0.1`, port `8728`, user `admin` and passwo
 
 ### Publishing an update
 
-The installed app looks for updates in the releases of the public repository `dabhans/MikroViewer-releases` (configured in `electron-builder.yml` and `src/main/updater.ts`). The source code can stay private.
+The installed app looks for updates in this repository's releases (configured in `electron-builder.yml` and `src/main/updater.ts`).
 
-1. Set the new version: `npm version minor` (or `patch`).
+1. Commit your changes, then set the new version: `npm version minor` (or `patch`). This commits the version number and tags it.
 2. Build and publish, using your GitHub CLI login (`gh auth login`):
 
 ```bash
 npm run release
 ```
+
+The script pushes the commit and tag, builds, and publishes the release with notes listing the changes since the previous release. Edit the notes on GitHub afterwards if you like.
+
+Versions up to 0.2.1 look for updates in `dabhans/MikroViewer-releases`, so the script copies each release there too. Archive that repository on GitHub when those versions are no longer in use, and the copying stops.

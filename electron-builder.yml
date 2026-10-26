@@ -19,11 +19,11 @@ nsis:
   artifactName: MikroViewer-Setup-${version}.${ext}
 portable:
   artifactName: MikroViewer-${version}-portable.${ext}
-# Updates are downloaded from the releases of this public repository (see src/main/updater.ts).
+# Updates are downloaded from the releases of this repository (see src/main/updater.ts).
 publish:
   provider: github
   owner: dabhans
-  repo: MikroViewer-releases
+  repo: MikroViewer
   releaseType: release
 mac:
   icon: build/icon.png
