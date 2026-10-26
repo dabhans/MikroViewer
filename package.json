@@ -1,7 +1,7 @@
 {
   "name": "mikroviewer",
   "productName": "MikroViewer",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Live monitoring of MikroTik routers – runs locally, no server",
   "main": "./out/main/index.js",
   "author": "Magnus Greis",
