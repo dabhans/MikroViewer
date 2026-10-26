@@ -122,6 +122,12 @@ export interface OverviewData {
   }
 }
 
+export interface NatInfo {
+  /** srcnat: the public address used outbound. dstnat: the internal target (port forward). */
+  kind: 'srcnat' | 'dstnat'
+  address: string
+}
+
 export interface ConnectionRow {
   id: string
   protocol: string
@@ -131,8 +137,7 @@ export interface ConnectionRow {
   dstPort?: number
   srcName?: string
   dstName?: string
-  /** srcnat: the public address used outbound. dstnat: the internal target (port forward). */
-  nat?: { kind: 'srcnat' | 'dstnat'; address: string }
+  nat?: NatInfo
   tcpState?: string
   timeoutSec: number
   /** Bytes sent from the source to the destination. */
@@ -145,24 +150,97 @@ export interface ConnectionRow {
   firstSeen: number
 }
 
-export interface ConnectionLogEntry {
-  seq: number
+// ---------- Logs ----------
+
+export type LogType = 'session' | 'firewall'
+export type LogAction = 'accept' | 'drop' | 'reject' | 'nat' | 'log'
+
+/**
+ * One log record. Sessions come from the connection table (one record per connection,
+ * completed with duration and bytes when it closes). Firewall records come from rules
+ * with logging enabled.
+ */
+export interface LogEntry {
+  id: number
+  /** Start time (ms). */
   t: number
-  event: 'open' | 'close'
+  type: LogType
+  action: LogAction
   protocol: string
-  srcAddress: string
+  src: string
   srcPort?: number
-  dstAddress: string
-  dstPort?: number
   srcName?: string
+  srcMac?: string
+  dst: string
+  dstPort?: number
   dstName?: string
-  nat?: { kind: 'srcnat' | 'dstnat'; address: string }
-  tcpState?: string
+  nat?: NatInfo
+
+  // Sessions
+  end?: number
+  durationSec?: number
+  /** The duration is a minimum: the connection existed before MikroViewer saw it, or closed while disconnected. */
+  approx?: boolean
   txBytes?: number
   rxBytes?: number
-  durationSec?: number
-  /** The connection already existed when MikroViewer connected – the duration is a minimum. */
-  durationApprox?: boolean
+  /** Still open on the router (only set in results from the main process). */
+  active?: boolean
+
+  // Firewall
+  chain?: string
+  inInterface?: string
+  outInterface?: string
+  /** Rule comment, or its log prefix. */
+  rule?: string
+  prefix?: string
+  /** e.g. "filter #5" */
+  ruleNumber?: string
+  tcpFlags?: string
+  connState?: string
+  length?: number
+  icmp?: string
+  message?: string
+}
+
+export interface LogQuery {
+  routerId: string
+  query: string
+  from: number
+  to: number
+  limit: number
+}
+
+export interface LogHistogram {
+  from: number
+  bucketMs: number
+  counts: number[]
+  /** Dropped or rejected per bucket (part of counts). */
+  blocked: number[]
+}
+
+export interface LogQueryResult {
+  /** Newest first, at most `limit`. */
+  entries: LogEntry[]
+  total: number
+  histogram: LogHistogram
+  from: number
+  to: number
+  tookMs: number
+  error?: string
+}
+
+export interface LogExportRequest {
+  routerId: string
+  query: string
+  from: number
+  to: number
+}
+
+export interface RouterLogEntry {
+  id: string
+  time: string
+  topics: string[]
+  message: string
 }
 
 export interface LeaseRow {
@@ -181,11 +259,31 @@ export interface LeaseRow {
   clientId?: string
 }
 
-export interface RouterLogEntry {
-  id: string
-  time: string
-  topics: string[]
-  message: string
+// ---------- Settings and updates ----------
+
+export type Theme = 'light' | 'dark'
+
+export interface Settings {
+  theme: Theme
+  logRetentionDays: number
+}
+
+export interface AppInfo {
+  version: string
+  /** The portable exe can't update itself – it gets a download link instead. */
+  portable: boolean
+  packaged: boolean
+}
+
+export type UpdateState = 'idle' | 'checking' | 'none' | 'available' | 'downloading' | 'ready' | 'error' | 'unsupported'
+
+export interface UpdateStatus {
+  state: UpdateState
+  version?: string
+  percent?: number
+  error?: string
+  /** Release page, for the portable version. */
+  url?: string
 }
 
 export type SessionEvent =
@@ -194,12 +292,14 @@ export type SessionEvent =
   | { type: 'profiles'; profiles: RouterProfile[] }
   | { type: 'overview'; id: string; data: OverviewData }
   | { type: 'connections'; id: string; rows: ConnectionRow[]; total: number; throttled: boolean }
-  | { type: 'connlog'; id: string; entries: ConnectionLogEntry[]; reset: boolean }
   | { type: 'leases'; id: string; rows: LeaseRow[]; error?: string }
   | { type: 'interfaces'; id: string; rows: InterfaceRow[] }
+  | { type: 'log'; id: string; added: LogEntry[]; updated: LogEntry[] }
+  | { type: 'update'; status: UpdateStatus }
 
 export interface MikroApi {
   platform: string
+  initialTheme: Theme
   listProfiles(): Promise<RouterProfile[]>
   saveProfile(input: ProfileInput): Promise<RouterProfile>
   deleteProfile(id: string): Promise<void>
@@ -209,7 +309,18 @@ export interface MikroApi {
   disconnect(id: string): Promise<void>
   focus(id: string | null): void
   routerLog(id: string): Promise<RouterLogEntry[]>
-  clearConnectionLog(id: string): Promise<void>
-  exportConnectionLog(id: string): Promise<{ saved: boolean; path?: string }>
+  queryLogs(q: LogQuery): Promise<LogQueryResult>
+  exportLogs(req: LogExportRequest): Promise<{ saved: boolean; path?: string }>
+  logStorage(): Promise<{ bytes: number }>
+  deleteLogs(): Promise<void>
+  openLogFolder(): Promise<void>
+  getSettings(): Promise<Settings>
+  setSettings(patch: Partial<Settings>): Promise<Settings>
+  appInfo(): Promise<AppInfo>
+  updateStatus(): Promise<UpdateStatus>
+  checkForUpdates(): Promise<UpdateStatus>
+  downloadUpdate(): Promise<void>
+  installUpdate(): Promise<void>
+  openExternal(url: string): Promise<void>
   onEvent(cb: (event: SessionEvent) => void): () => void
 }

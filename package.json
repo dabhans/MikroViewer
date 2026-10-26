@@ -1,7 +1,7 @@
 {
   "name": "mikroviewer",
   "productName": "MikroViewer",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Live monitoring of MikroTik routers – runs locally, no server",
   "main": "./out/main/index.js",
   "author": "Magnus Greis",
@@ -12,8 +12,9 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.node.json --composite false && tsc --noEmit -p tsconfig.web.json --composite false",
     "mock": "node scripts/mock-router.mjs",
-    "dist": "electron-vite build && electron-builder --win",
-    "dist:dir": "electron-vite build && electron-builder --win --dir"
+    "dist": "electron-vite build && electron-builder --win --publish never",
+    "dist:dir": "electron-vite build && electron-builder --win --dir --publish never",
+    "release": "node scripts/release.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
@@ -27,5 +28,8 @@
     "react-dom": "^19.3.1",
     "typescript": "~5.9",
     "vite": "^8.3.5"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
   }
 }

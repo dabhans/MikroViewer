@@ -46,8 +46,17 @@ interface Pending {
   trap?: RouterOSError
   resolve: (r: CommandResult) => void
   reject: (e: Error) => void
-  timer: NodeJS.Timeout
+  timer?: NodeJS.Timeout
   trapTimer?: NodeJS.Timeout
+  /** Streaming commands (e.g. print with follow-only) hand each !re over instead of collecting them. */
+  onRecord?: (r: ApiRecord) => void
+  cancelled?: boolean
+}
+
+export interface Stream {
+  /** Resolves when the router ends the stream or it is cancelled. */
+  done: Promise<void>
+  cancel(): void
 }
 
 export function encodeLength(len: number): Buffer {
@@ -271,12 +280,38 @@ export class RouterOSClient extends EventEmitter {
     return new Promise<CommandResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(tag)
-        this.write(['/cancel', `=tag=${tag}`])
+        this.cancelTag(tag)
         reject(new RouterOSError(`Router did not answer ${words[0]} within ${Math.round(timeoutMs / 1000)} s`, 'timeout'))
       }, timeoutMs)
       this.pending.set(tag, { re: [], resolve, reject, timer })
       this.write([...words, `.tag=${tag}`])
     })
+  }
+
+  /** Runs a command that keeps sending replies (such as /log/print =follow-only=) until cancelled. */
+  stream(words: string[], onRecord: (r: ApiRecord) => void): Stream {
+    if (this.closed || !this.socket) {
+      return { done: Promise.reject(new RouterOSError('Connection to the router is closed', 'network')), cancel: () => {} }
+    }
+    const tag = String(++this.tagSeq)
+    const done = new Promise<void>((resolve, reject) => {
+      this.pending.set(tag, { re: [], resolve: () => resolve(), reject, onRecord })
+      this.write([...words, `.tag=${tag}`])
+    })
+    return {
+      done,
+      cancel: () => {
+        const p = this.pending.get(tag)
+        if (!p || p.cancelled) return
+        p.cancelled = true
+        this.cancelTag(tag)
+      }
+    }
+  }
+
+  /** /cancel gets a tag of its own so its reply can't be mistaken for another command's. */
+  private cancelTag(tag: string): void {
+    this.command(['/cancel', `=tag=${tag}`], 5000).catch(() => {})
   }
 
   /** Convenience wrapper for `print`. Arguments like { '.proplist': 'a,b' } become =.proplist=a,b */
@@ -340,7 +375,8 @@ export class RouterOSClient extends EventEmitter {
 
     switch (type) {
       case '!re':
-        p.re.push(attrs)
+        if (p.onRecord) p.onRecord(attrs)
+        else p.re.push(attrs)
         break
       case '!trap':
         p.trap = new RouterOSError(attrs.message || 'Unknown error from router', 'trap', attrs.category)
@@ -361,7 +397,8 @@ export class RouterOSClient extends EventEmitter {
     this.pending.delete(tag)
     clearTimeout(p.timer)
     if (p.trapTimer) clearTimeout(p.trapTimer)
-    const error = err ?? p.trap
+    // A cancelled stream ends with "interrupted" – that's not an error.
+    const error = err ?? (p.cancelled ? undefined : p.trap)
     if (error) p.reject(error)
     else p.resolve({ re: p.re, done })
   }

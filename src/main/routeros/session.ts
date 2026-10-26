@@ -1,14 +1,17 @@
 // One RouterSession per router profile. It keeps the API connection open, polls data in the
-// background, reconnects automatically and builds the connection log by diffing snapshots.
+// background, reconnects automatically and writes the log: sessions by diffing snapshots of the
+// connection table, firewall records from the router's log.
 
-import { RouterOSClient, RouterOSError, type ApiRecord } from './client'
+import { RouterOSClient, RouterOSError, type ApiRecord, type Stream } from './client'
 import { bool, num, parseDuration, parseHealth, primaryTemperature, splitHostPort, stripPrefix } from './parse'
+import { matchRule, parseFirewallMessage, type FirewallRule, type RuleTable } from '../logs/firewall'
+import type { LogSink, NewLogEntry } from '../logs/store'
 import type {
-  ConnectionLogEntry,
   ConnectionRow,
   HealthSensor,
   InterfaceRow,
   LeaseRow,
+  NatInfo,
   OverviewData,
   ResourceSample,
   RouterLogEntry,
@@ -43,7 +46,8 @@ const LEASE_INTERVAL = 10000
 const SLOW_INTERVAL = 30000
 const HISTORY_LEN = 180 // 6 minutes at 2 s
 const IF_HISTORY_LEN = 90 // 3 minutes at 2 s
-const LOG_MAX = 20000
+/** Used when the router can't stream its log. */
+const LOG_POLL_INTERVAL = 5000
 /** Above this many entries the connection table is no longer fetched (to spare the router's CPU). */
 const CONN_ROW_LIMIT = 20000
 
@@ -52,8 +56,13 @@ const CONN_PROPLIST = [
   'protocol',
   'src-address',
   'dst-address',
+  // RouterOS 7.20 and later have the ports in fields of their own.
+  'src-port',
+  'dst-port',
   'reply-src-address',
   'reply-dst-address',
+  'reply-src-port',
+  'reply-dst-port',
   'tcp-state',
   'timeout',
   'orig-bytes',
@@ -62,6 +71,8 @@ const CONN_PROPLIST = [
   'repl-rate',
   'fasttrack'
 ].join(',')
+
+const RULE_TABLES: RuleTable[] = ['filter', 'raw', 'nat', 'mangle']
 
 function connectionInterval(total: number): number {
   if (total <= 2000) return 3000
@@ -74,9 +85,53 @@ function pushCapped<T>(arr: T[], item: T, max: number): void {
   if (arr.length > max) arr.splice(0, arr.length - max)
 }
 
-interface PrevConnection {
+interface Endpoint {
+  ip: string
+  port?: number
+}
+
+/** RouterOS 7.20+ has separate port fields; older versions write "ip:port" in the address. */
+function endpoint(r: ApiRecord, addrKey: string, portKey: string): Endpoint {
+  const a = splitHostPort(r[addrKey])
+  const p = r[portKey]
+  if (a.port === undefined && p !== undefined && p !== '' && Number.isFinite(Number(p))) return { ip: a.ip, port: Number(p) }
+  return a
+}
+
+function formatEndpoint(e: Endpoint): string {
+  return e.port !== undefined ? `${e.ip}:${e.port}` : e.ip
+}
+
+function differs(a: Endpoint, b: Endpoint): boolean {
+  return !!a.ip && (a.ip !== b.ip || (a.port !== undefined && b.port !== undefined && a.port !== b.port))
+}
+
+interface Tracked {
   row: ConnectionRow
   seenAt: number
+  /** Protocol and endpoints – an id reused after a router reboot is a different connection. */
+  key: string
+  logId?: number
+  /** Names written when the session was logged, so a name found later is added at close. */
+  loggedNames?: { src?: string; dst?: string }
+  /** A closed TCP connection stays in the table for a while (time-wait) – it ended when that began. */
+  closingAt?: number
+}
+
+function sessionFields(row: ConnectionRow): NewLogEntry {
+  return {
+    t: row.firstSeen,
+    type: 'session',
+    action: 'accept',
+    protocol: row.protocol,
+    src: row.srcAddress,
+    srcPort: row.srcPort,
+    srcName: row.srcName,
+    dst: row.dstAddress,
+    dstPort: row.dstPort,
+    dstName: row.dstName,
+    nat: row.nat
+  }
 }
 
 export class RouterSession {
@@ -97,14 +152,17 @@ export class RouterSession {
   private connections: ConnectionRow[] = []
   private connTotal = 0
   private connThrottled = false
-  private connPrev = new Map<string, PrevConnection>()
-  private connBaseline = new Set<string>()
-  private connHasBaseline = false
+  /** Kept across reconnects so a connection that is still open isn't logged twice. */
+  private tracked = new Map<string, Tracked>()
+  /** The next snapshot only records what exists (after connecting) – it opens no sessions. */
+  private connBaseline = true
   private noCountOnly = false
+  private noConnProplist = false
 
-  private log: ConnectionLogEntry[] = []
-  private logSeq = 0
-  private logPending: ConnectionLogEntry[] = []
+  private rules: FirewallRule[] = []
+  private logStream?: Stream
+  private noLogStream = false
+  private lastLogId = -1
 
   private leases: LeaseRow[] = []
   private leaseError?: string
@@ -120,7 +178,8 @@ export class RouterSession {
 
   constructor(
     readonly id: string,
-    private readonly host: SessionHost
+    private readonly host: SessionHost,
+    private readonly log: LogSink
   ) {
     this.status = { id, state: 'disconnected' }
   }
@@ -141,7 +200,13 @@ export class RouterSession {
     this.stopLoops()
     this.client?.close()
     this.client = null
+    this.abandonSessions()
     this.setStatus({ id: this.id, state: 'disconnected' })
+  }
+
+  /** While nobody is watching, open sessions can't be followed – their end becomes unknown. */
+  private abandonSessions(): void {
+    for (const t of this.tracked.values()) if (t.logId !== undefined) this.log.abandon(t.logId)
   }
 
   dispose(): void {
@@ -175,8 +240,7 @@ export class RouterSession {
       if (client.fingerprint && !creds.expectedFingerprint) this.host.onFingerprint(this.id, client.fingerprint)
       client.on('close', (err: RouterOSError) => this.onLost(gen, err))
       this.retryDelay = 2000
-      this.connHasBaseline = false
-      this.connPrev.clear()
+      this.connBaseline = true
       this.ifPrev.clear()
       try {
         await this.loadSystem(client)
@@ -196,6 +260,7 @@ export class RouterSession {
         this.scheduleRetry(e.message)
       } else {
         this.wanted = false
+        this.abandonSessions()
         this.setStatus({ id: this.id, state: 'error', error: e.message })
       }
     }
@@ -230,6 +295,58 @@ export class RouterSession {
     this.loop(gen, () => INTERFACE_INTERVAL, (c) => this.pollInterfaces(c))
     this.loop(gen, () => RESOURCE_INTERVAL, (c) => this.pollResource(c))
     this.loop(gen, () => (this.connThrottled ? 10000 : connectionInterval(this.connTotal)), (c) => this.pollConnections(c))
+    this.startFirewallLog(gen)
+  }
+
+  /** New lines in the router's log arrive as a stream; older routers that can't stream are polled. */
+  private startFirewallLog(gen: number): void {
+    const c = this.client
+    if (!c) return
+    if (this.noLogStream) {
+      this.lastLogId = -1
+      this.loop(gen, () => LOG_POLL_INTERVAL, (c) => this.pollRouterLog(c))
+      return
+    }
+    this.logStream = c.stream(['/log/print', '=follow-only='], (r) => this.onRouterLog(r))
+    this.logStream.done.catch((err) => {
+      if (gen !== this.generation || c.isClosed) return
+      if (err instanceof RouterOSError && err.kind === 'trap') {
+        this.noLogStream = true
+        this.startFirewallLog(gen)
+      }
+    })
+  }
+
+  private async pollRouterLog(c: RouterOSClient): Promise<void> {
+    const recs = await c.print('/log')
+    const idOf = (r: ApiRecord): number => parseInt((r['.id'] ?? '').replace('*', ''), 16)
+    const max = recs.reduce((m, r) => Math.max(m, idOf(r) || 0), -1)
+    // The first poll only marks where we are. Ids start over when the router reboots.
+    if (this.lastLogId >= 0 && max >= this.lastLogId) for (const r of recs) if (idOf(r) > this.lastLogId) this.onRouterLog(r)
+    this.lastLogId = max
+  }
+
+  private onRouterLog(r: ApiRecord): void {
+    if (r['.dead'] || !(r.topics ?? '').split(',').includes('firewall')) return
+    const message = r.message ?? ''
+    const packet = parseFirewallMessage(message)
+    const t = Date.now()
+    if (!packet) {
+      this.log.add({ t, type: 'firewall', action: 'log', protocol: '', src: '', dst: '', message })
+      return
+    }
+    const match = matchRule(this.rules, packet.chain, packet.prefix)
+    this.log.add({
+      t,
+      type: 'firewall',
+      ...packet,
+      action: match.action,
+      rule: match.rule,
+      ruleNumber: match.ruleNumber,
+      srcName: this.nameForIp(packet.src, false),
+      dstName: this.nameForIp(packet.dst, true),
+      message
+    })
   }
 
   private loop(gen: number, interval: () => number, fn: (c: RouterOSClient) => Promise<void>): void {
@@ -367,8 +484,7 @@ export class RouterSession {
     if (total !== null && total > CONN_ROW_LIMIT) {
       if (!this.connThrottled) {
         this.connThrottled = true
-        this.connHasBaseline = false
-        this.connPrev.clear()
+        this.connBaseline = true
       }
       this.connTotal = total
       this.connections = []
@@ -376,59 +492,91 @@ export class RouterSession {
       return
     }
 
-    const recs = await c.print(path, { '.proplist': CONN_PROPLIST })
-    if (this.connThrottled) {
-      this.connThrottled = false
-      this.connHasBaseline = false
-      this.connPrev.clear()
-    }
+    const recs = await this.printConnections(c, path)
+    this.connThrottled = false
     const now = Date.now()
+    const baseline = this.connBaseline
     const rows: ConnectionRow[] = []
-    const current = new Map<string, PrevConnection>()
+    const current = new Map<string, Tracked>()
     for (const r of recs) {
       const id = r['.id']
       if (!id) continue
-      const row = this.toConnectionRow(r, now)
-      rows.push(row)
-      current.set(id, { row, seenAt: now })
-    }
-
-    if (this.connHasBaseline) {
-      for (const [id, cur] of current) if (!this.connPrev.has(id)) this.logEvent('open', cur.row, now)
-      for (const [id, prev] of this.connPrev) {
-        if (current.has(id)) continue
-        this.logEvent('close', prev.row, now, {
-          durationSec: Math.max(0, (prev.seenAt - prev.row.firstSeen) / 1000),
-          durationApprox: this.connBaseline.has(id)
-        })
-        this.connBaseline.delete(id)
+      const src = endpoint(r, 'src-address', 'src-port')
+      const dst = endpoint(r, 'dst-address', 'dst-port')
+      const key = `${r.protocol}|${formatEndpoint(src)}|${formatEndpoint(dst)}`
+      let prev = this.tracked.get(id)
+      if (prev && prev.key !== key) {
+        this.closeSession(prev, true)
+        prev = undefined
       }
-    } else {
-      this.connBaseline = new Set(current.keys())
-      this.connHasBaseline = true
+      const row = this.toConnectionRow(r, src, dst, now, prev)
+      const closing = row.tcpState === 'time-wait' || row.tcpState === 'close'
+      const t: Tracked = { row, seenAt: now, key, logId: prev?.logId, loggedNames: prev?.loggedNames, closingAt: prev?.closingAt ?? (closing ? now : undefined) }
+      if (!prev && !baseline) {
+        t.logId = this.log.add(sessionFields(row), true)
+        t.loggedNames = { src: row.srcName, dst: row.dstName }
+      } else if (prev?.logId !== undefined && baseline) {
+        this.log.resume(prev.logId)
+      }
+      rows.push(row)
+      current.set(id, t)
     }
-    this.connPrev = current
+    // Gone since the last snapshot. Right after (re)connecting we don't know when they closed.
+    for (const [id, prev] of this.tracked) if (!current.has(id)) this.closeSession(prev, baseline)
+
+    this.tracked = current
+    this.connBaseline = false
     this.connections = rows
     this.connTotal = total ?? rows.length
     this.emitConnections()
   }
 
-  private toConnectionRow(r: ApiRecord, now: number): ConnectionRow {
-    const id = r['.id']
-    const src = splitHostPort(r['src-address'])
-    const dst = splitHostPort(r['dst-address'])
-    const replySrc = r['reply-src-address']
-    const replyDst = r['reply-dst-address']
-    let nat: ConnectionRow['nat']
-    if (replySrc && replySrc !== r['dst-address']) nat = { kind: 'dstnat', address: replySrc }
-    else if (replyDst && replyDst !== r['src-address']) nat = { kind: 'srcnat', address: replyDst }
+  private async printConnections(c: RouterOSClient, path: string): Promise<ApiRecord[]> {
+    if (this.noConnProplist) return c.print(path)
+    try {
+      return await c.print(path, { '.proplist': CONN_PROPLIST })
+    } catch (err) {
+      if (!(err instanceof RouterOSError && err.kind === 'trap')) throw err
+      this.noConnProplist = true
+      return c.print(path)
+    }
+  }
+
+  private closeSession(prev: Tracked, approx: boolean): void {
+    const r = prev.row
+    const end = prev.closingAt ?? prev.seenAt
+    const closed = {
+      end,
+      durationSec: Math.max(0, (end - r.firstSeen) / 1000),
+      txBytes: r.txBytes,
+      rxBytes: r.rxBytes,
+      ...(approx ? { approx: true } : {})
+    }
+    if (prev.logId === undefined) {
+      // It existed before we started watching, so it was never logged as opened.
+      this.log.add({ ...sessionFields(r), ...closed, approx: true })
+      return
+    }
+    this.log.update(prev.logId, {
+      ...closed,
+      ...(r.srcName && r.srcName !== prev.loggedNames?.src ? { srcName: r.srcName } : {}),
+      ...(r.dstName && r.dstName !== prev.loggedNames?.dst ? { dstName: r.dstName } : {})
+    })
+  }
+
+  private toConnectionRow(r: ApiRecord, src: Endpoint, dst: Endpoint, now: number, prev?: Tracked): ConnectionRow {
+    const replySrc = endpoint(r, 'reply-src-address', 'reply-src-port')
+    const replyDst = endpoint(r, 'reply-dst-address', 'reply-dst-port')
+    let nat: NatInfo | undefined
+    if (differs(replySrc, dst)) nat = { kind: 'dstnat', address: formatEndpoint(replySrc) }
+    else if (differs(replyDst, src)) nat = { kind: 'srcnat', address: formatEndpoint(replyDst) }
 
     const txBytes = num(r['orig-bytes'])
     const rxBytes = num(r['repl-bytes'])
-    const prev = this.connPrev.get(id)
     let txBps = 0
     let rxBps = 0
-    if (prev && now > prev.seenAt && (r['orig-bytes'] !== undefined || r['repl-bytes'] !== undefined)) {
+    // After a long gap (reconnect) the router's own rate is closer to the truth than an average.
+    if (prev && now > prev.seenAt && now - prev.seenAt < 30000 && (r['orig-bytes'] !== undefined || r['repl-bytes'] !== undefined)) {
       const dt = (now - prev.seenAt) / 1000
       txBps = Math.max(0, ((txBytes - prev.row.txBytes) * 8) / dt)
       rxBps = Math.max(0, ((rxBytes - prev.row.rxBytes) * 8) / dt)
@@ -438,7 +586,7 @@ export class RouterSession {
     }
 
     return {
-      id,
+      id: r['.id'],
       protocol: r.protocol ?? '',
       srcAddress: src.ip,
       srcPort: src.port,
@@ -464,27 +612,6 @@ export class RouterSession {
     const lease = this.leaseByIp.get(ip)
     if (lease) return lease.comment || lease.hostName || undefined
     return useDns ? this.dnsByIp.get(ip) : undefined
-  }
-
-  private logEvent(event: 'open' | 'close', row: ConnectionRow, t: number, extra: Partial<ConnectionLogEntry> = {}): void {
-    const entry: ConnectionLogEntry = {
-      seq: ++this.logSeq,
-      t,
-      event,
-      protocol: row.protocol,
-      srcAddress: row.srcAddress,
-      srcPort: row.srcPort,
-      dstAddress: row.dstAddress,
-      dstPort: row.dstPort,
-      srcName: row.srcName,
-      dstName: row.dstName,
-      nat: row.nat,
-      tcpState: row.tcpState,
-      ...(event === 'close' ? { txBytes: row.txBytes, rxBytes: row.rxBytes } : {}),
-      ...extra
-    }
-    pushCapped(this.log, entry, LOG_MAX)
-    if (this.focused) this.logPending.push(entry)
   }
 
   private async pollLeases(c: RouterOSClient): Promise<void> {
@@ -521,13 +648,14 @@ export class RouterSession {
     if (this.focused) this.emitLeases()
   }
 
-  /** Slow lookups: DNS cache (domain names), the router's own IPs, identity and the WAN interface. */
+  /** Slow lookups: DNS cache (domain names), the router's own IPs, identity, WAN interface and firewall rules. */
   private async pollSlow(c: RouterOSClient): Promise<void> {
     const [dns, addrs, ident, members] = await Promise.all([
       c.print('/ip/dns/cache/all').catch(() => c.print('/ip/dns/cache').catch(() => [] as ApiRecord[])),
       c.print('/ip/address').catch(() => [] as ApiRecord[]),
       c.print('/system/identity').catch(() => [] as ApiRecord[]),
-      c.print('/interface/list/member').catch(() => [] as ApiRecord[])
+      c.print('/interface/list/member').catch(() => [] as ApiRecord[]),
+      this.loadRules(c)
     ])
 
     // DNS: A records give ip → name. CNAME chains are followed backwards so we show
@@ -570,6 +698,26 @@ export class RouterSession {
     this.wanNames = wan.filter(Boolean)
   }
 
+  /** The firewall rules tell which action and rule a logged packet belongs to. */
+  private async loadRules(c: RouterOSClient): Promise<void> {
+    const tables = await Promise.all(
+      RULE_TABLES.map((t) => c.print(`/ip/firewall/${t}`, { '.proplist': 'chain,action,log,log-prefix,comment,disabled' }).catch(() => null))
+    )
+    if (tables.every((t) => t === null)) return
+    this.rules = tables.flatMap((recs, ti) =>
+      (recs ?? []).map((r, index) => ({
+        table: RULE_TABLES[ti],
+        index,
+        chain: r.chain ?? '',
+        action: r.action ?? '',
+        prefix: r['log-prefix'] ?? '',
+        comment: r.comment || undefined,
+        log: bool(r.log),
+        disabled: bool(r.disabled)
+      }))
+    )
+  }
+
   private wanInterface(): string | undefined {
     const candidates = this.wanNames.length
       ? this.interfaces.filter((i) => this.wanNames.includes(i.name))
@@ -582,10 +730,9 @@ export class RouterSession {
 
   setFocused(focused: boolean): void {
     this.focused = focused
-    this.logPending = []
     if (!focused) return
     this.emitOverview()
-    this.emitConnections(true)
+    this.emitConnections()
     this.emitLeases()
     this.host.emit({ type: 'interfaces', id: this.id, rows: this.interfaces })
   }
@@ -621,16 +768,9 @@ export class RouterSession {
     this.host.emit({ type: 'overview', id: this.id, data })
   }
 
-  private emitConnections(fullLog = false): void {
+  private emitConnections(): void {
     if (!this.focused) return
     this.host.emit({ type: 'connections', id: this.id, rows: this.connections, total: this.connTotal, throttled: this.connThrottled })
-    if (fullLog) {
-      this.host.emit({ type: 'connlog', id: this.id, entries: this.log, reset: true })
-      this.logPending = []
-    } else if (this.logPending.length) {
-      this.host.emit({ type: 'connlog', id: this.id, entries: this.logPending, reset: false })
-      this.logPending = []
-    }
   }
 
   private emitLeases(): void {
@@ -651,57 +791,8 @@ export class RouterSession {
     }))
   }
 
-  clearLog(): void {
-    this.log = []
-    this.logPending = []
-    if (this.focused) this.host.emit({ type: 'connlog', id: this.id, entries: [], reset: true })
-  }
-
   get identity(): string | undefined {
     return this.system?.identity
-  }
-
-  connectionLogCsv(): string {
-    const esc = (v: unknown): string => {
-      const s = v === undefined || v === null ? '' : String(v)
-      return /[,"\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
-    }
-    const header = [
-      'Time',
-      'Event',
-      'Protocol',
-      'Source',
-      'Source name',
-      'Destination',
-      'Destination name',
-      'Destination port',
-      'NAT',
-      'Sent (bytes)',
-      'Received (bytes)',
-      'Duration (s)'
-    ]
-    const lines = [header.join(',')]
-    for (const e of this.log) {
-      lines.push(
-        [
-          new Date(e.t).toISOString(),
-          e.event,
-          e.protocol,
-          e.srcAddress,
-          e.srcName,
-          e.dstAddress,
-          e.dstName,
-          e.dstPort,
-          e.nat ? `${e.nat.kind} ${e.nat.address}` : '',
-          e.txBytes,
-          e.rxBytes,
-          e.durationSec !== undefined ? Math.round(e.durationSec) : ''
-        ]
-          .map(esc)
-          .join(',')
-      )
-    }
-    return '﻿' + lines.join('\r\n')
   }
 }
 

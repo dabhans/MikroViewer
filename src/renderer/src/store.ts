@@ -1,5 +1,4 @@
 import type {
-  ConnectionLogEntry,
   ConnectionRow,
   InterfaceRow,
   LeaseRow,
@@ -10,14 +9,11 @@ import type {
   SessionStatus
 } from '../../shared/types'
 
-export const LOG_MAX = 20000
-
 /** Data for the router currently shown (the main process only sends heavy data for that one). */
 export interface RouterData {
   id: string | null
   overview?: OverviewData
   connections?: { rows: ConnectionRow[]; total: number; throttled: boolean }
-  connlog: ConnectionLogEntry[]
   leases?: { rows: LeaseRow[]; error?: string }
   interfaces?: InterfaceRow[]
 }
@@ -42,7 +38,7 @@ export const initialState: State = {
   statuses: {},
   summaries: {},
   selectedId: null,
-  data: { id: null, connlog: [] }
+  data: { id: null }
 }
 
 export function reducer(state: State, action: Action): State {
@@ -55,11 +51,11 @@ export function reducer(state: State, action: Action): State {
         // Statuses already received as events are newer than the ones from the startup call.
         statuses: { ...Object.fromEntries(action.statuses.map((s) => [s.id, s])), ...state.statuses },
         selectedId: action.selectedId,
-        data: { id: action.selectedId, connlog: [] }
+        data: { id: action.selectedId }
       }
     case 'select':
       if (action.id === state.selectedId) return state
-      return { ...state, selectedId: action.id, data: { id: action.id, connlog: [] } }
+      return { ...state, selectedId: action.id, data: { id: action.id } }
     case 'event':
       return applyEvent(state, action.event)
   }
@@ -71,7 +67,7 @@ function applyEvent(state: State, e: SessionEvent): State {
       const statuses = { ...state.statuses, [e.status.id]: e.status }
       // Clear the shown data when the connection is closed for good, so no stale numbers are shown.
       if (e.status.id === state.data.id && (e.status.state === 'disconnected' || e.status.state === 'error')) {
-        return { ...state, statuses, data: { id: state.data.id, connlog: state.data.connlog } }
+        return { ...state, statuses, data: { id: state.data.id } }
       }
       return { ...state, statuses }
     }
@@ -80,9 +76,13 @@ function applyEvent(state: State, e: SessionEvent): State {
     case 'profiles': {
       const ids = new Set(e.profiles.map((p) => p.id))
       const selectedId = state.selectedId && ids.has(state.selectedId) ? state.selectedId : (e.profiles[0]?.id ?? null)
-      const data = selectedId === state.data.id ? state.data : { id: selectedId, connlog: [] }
+      const data = selectedId === state.data.id ? state.data : { id: selectedId }
       return { ...state, profiles: e.profiles, selectedId, data }
     }
+    // Handled by the views that use them.
+    case 'log':
+    case 'update':
+      return state
   }
   if (e.id !== state.data.id) return state
   const d = state.data
@@ -91,11 +91,6 @@ function applyEvent(state: State, e: SessionEvent): State {
       return { ...state, data: { ...d, overview: e.data } }
     case 'connections':
       return { ...state, data: { ...d, connections: { rows: e.rows, total: e.total, throttled: e.throttled } } }
-    case 'connlog': {
-      let connlog = e.reset ? [...e.entries] : d.connlog.concat(e.entries)
-      if (connlog.length > LOG_MAX) connlog = connlog.slice(connlog.length - LOG_MAX)
-      return { ...state, data: { ...d, connlog } }
-    }
     case 'leases':
       return { ...state, data: { ...d, leases: { rows: e.rows, error: e.error } } }
     case 'interfaces':

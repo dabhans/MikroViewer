@@ -4,7 +4,9 @@
 //
 //   node scripts/mock-router.mjs                        (port 8728, user admin / password admin)
 //   node scripts/mock-router.mjs --port 18728 --name Sommerhus --devices 4 --no-health
-//   node scripts/mock-router.mjs --ros6                 (RouterOS 6 format for /system/health)
+//   node scripts/mock-router.mjs --ros719               (RouterOS 7.19: ports inside the addresses)
+//   node scripts/mock-router.mjs --ros6                 (RouterOS 6: as 7.19, plus the old /system/health format)
+//   node scripts/mock-router.mjs --no-follow            (a router that can't stream its log)
 //   node scripts/mock-router.mjs --tls --cert c.pem --key k.pem --port 8729
 
 import net from 'node:net'
@@ -26,7 +28,11 @@ const USER = opt('user', 'admin')
 const PASSWORD = opt('password', 'admin')
 const DEVICE_COUNT = Number(opt('devices', 14))
 const ROS6 = flag('ros6')
+/** RouterOS 7.20 moved the connection ports into src-port/dst-port fields. */
+const SPLIT_PORTS = !ROS6 && !flag('ros719')
+const VERSION = ROS6 ? '6.49.17 (long-term)' : SPLIT_PORTS ? '7.20.2 (stable)' : '7.19.4 (stable)'
 const NO_HEALTH = flag('no-health')
+const NO_FOLLOW = flag('no-follow')
 let seed = Number(opt('seed', 1))
 
 function rand() {
@@ -242,7 +248,7 @@ function resource() {
   const total = 1073741824
   return {
     uptime: duration((Date.now() - startedAt) / 1000),
-    version: ROS6 ? '6.49.17 (long-term)' : '7.19.4 (stable)',
+    version: VERSION,
     'build-time': '2025-09-16 10:12:44',
     'factory-software': '7.5',
     'free-memory': String(Math.floor(total * between(0.58, 0.6))),
@@ -269,16 +275,23 @@ function duration(sec) {
   return `${w ? w + 'w' : ''}${d ? d + 'd' : ''}${h ? h + 'h' : ''}${m ? m + 'm' : ''}${s}s`
 }
 
+/** "ip:port" as RouterOS writes it: one field before 7.20, separate address and port fields after. */
+function addressFields(prefix, value) {
+  if (!SPLIT_PORTS) return { [`${prefix}-address`]: value }
+  const i = value.indexOf(':')
+  return i === -1 ? { [`${prefix}-address`]: value } : { [`${prefix}-address`]: value.slice(0, i), [`${prefix}-port`]: value.slice(i + 1) }
+}
+
 function connectionRecords(now) {
   return [...connections.values()].map((c) => {
     const closing = now > c.end
     const rec = {
       '.id': c.id,
       protocol: c.proto,
-      'src-address': c.src,
-      'dst-address': c.dst,
-      'reply-src-address': c.replySrc,
-      'reply-dst-address': c.replyDst,
+      ...addressFields('src', c.src),
+      ...addressFields('dst', c.dst),
+      ...addressFields('reply-src', c.replySrc),
+      ...addressFields('reply-dst', c.replyDst),
       timeout: closing ? duration(Math.max(0, 10 - (now - c.end) / 1000)) : c.proto === 'tcp' ? '23h59m' + Math.floor(between(50, 59)) + 's' : duration(Math.max(1, (c.end - now) / 1000 + 10)),
       'orig-bytes': String(c.origBytes),
       'repl-bytes': String(c.replBytes),
@@ -362,11 +375,86 @@ function dnsRecords() {
 
 const LOG = []
 let logId = 0x100
+/** Clients streaming the log with /log/print =follow-only=. */
+const logFollowers = new Set()
 function log(topics, message) {
   const d = new Date()
   const time = d.toTimeString().slice(0, 8)
-  LOG.push({ '.id': `*${(logId++).toString(16).toUpperCase()}`, time, topics, message })
+  const entry = { '.id': `*${(logId++).toString(16).toUpperCase()}`, time, topics, message }
+  LOG.push(entry)
   if (LOG.length > 1000) LOG.shift()
+  for (const f of logFollowers) f.push(entry)
+}
+
+// ---------- Firewall ----------
+
+const rule = (r) => ({ log: 'false', 'log-prefix': '', disabled: 'false', ...r })
+const RULES = {
+  filter: [
+    rule({ chain: 'input', action: 'accept', 'connection-state': 'established,related,untracked', comment: 'defconf: accept established,related,untracked' }),
+    rule({ chain: 'input', action: 'drop', 'connection-state': 'invalid', comment: 'defconf: drop invalid' }),
+    rule({ chain: 'input', action: 'accept', protocol: 'icmp', comment: 'defconf: accept ICMP' }),
+    rule({ chain: 'input', action: 'drop', 'in-interface-list': '!LAN', log: 'true', 'log-prefix': 'DROP-IN', comment: 'defconf: drop all not coming from LAN' }),
+    rule({ chain: 'forward', action: 'fasttrack-connection', 'connection-state': 'established,related', comment: 'defconf: fasttrack' }),
+    rule({ chain: 'forward', action: 'accept', 'connection-state': 'established,related,untracked', comment: 'defconf: accept established,related, untracked' }),
+    rule({ chain: 'forward', action: 'drop', 'connection-state': 'invalid', log: 'true', 'log-prefix': 'INVALID', comment: 'defconf: drop invalid' }),
+    rule({ chain: 'forward', action: 'reject', protocol: 'tcp', 'dst-port': '25', log: 'true', 'log-prefix': 'BLOCK-SMTP', comment: 'Block outgoing mail' }),
+    rule({ chain: 'forward', action: 'accept', protocol: 'tcp', 'dst-address': NAS.address, 'dst-port': '443', log: 'true', 'log-prefix': 'NAS-WEB', comment: 'Allow NAS web access' }),
+    rule({ chain: 'forward', action: 'drop', 'connection-nat-state': '!dstnat', 'in-interface-list': 'WAN', log: 'true', 'log-prefix': 'DROP-FWD', comment: 'defconf: drop all from WAN not DSTNATed' })
+  ],
+  raw: [rule({ chain: 'prerouting', action: 'drop', 'src-address-list': 'blocklist', log: 'true', 'log-prefix': 'BLOCKLIST', comment: 'Drop known bad hosts' })],
+  nat: [
+    rule({ chain: 'srcnat', action: 'masquerade', 'out-interface-list': 'WAN', comment: 'defconf: masquerade' }),
+    rule({ chain: 'dstnat', action: 'dst-nat', protocol: 'tcp', 'dst-port': '443', 'in-interface': 'ether1', 'to-addresses': NAS.address, 'to-ports': '443', comment: 'NAS' })
+  ],
+  mangle: []
+}
+
+const ISP_MAC = '00:0C:42:7E:11:90'
+const SCAN_PORTS = [
+  ['TCP', 22],
+  ['TCP', 23],
+  ['TCP', 3389],
+  ['TCP', 8291],
+  ['TCP', 445],
+  ['TCP', 80],
+  ['TCP', 8080],
+  ['TCP', 5900],
+  ['TCP', 1433],
+  ['UDP', 5060],
+  ['UDP', 1900],
+  ['UDP', 123]
+]
+const randIp = () => `${pick([45, 80, 91, 103, 185, 193, 194, 212])}.${Math.floor(between(1, 254))}.${Math.floor(between(1, 254))}.${Math.floor(between(1, 254))}`
+const randPort = () => Math.floor(between(30000, 65000))
+
+/** Log lines as RouterOS writes them for rules with log=yes. */
+const FIREWALL_EVENTS = [
+  [8, () => {
+    const [proto, port] = pick(SCAN_PORTS)
+    return `DROP-IN input: in:ether1 out:(unknown 0), connection-state:new src-mac ${ISP_MAC}, proto ${proto}${proto === 'TCP' ? ' (SYN)' : ''}, ${randIp()}:${randPort()}->${PUBLIC_IP}:${port}, len ${proto === 'TCP' ? 44 : 60}`
+  }],
+  [1.5, () => `DROP-IN input: in:ether1 out:(unknown 0), connection-state:new src-mac ${ISP_MAC}, proto ICMP (type 8, code 0), ${randIp()}->${PUBLIC_IP}, len 84`],
+  [2, () => `BLOCKLIST prerouting: in:ether1 out:(unknown 0), src-mac ${ISP_MAC}, proto TCP (SYN), 45.148.10.${Math.floor(between(2, 250))}:${randPort()}->${PUBLIC_IP}:443, len 60`],
+  [1.5, () => {
+    const src = `${randIp()}:${randPort()}`
+    return `NAS-WEB forward: in:ether1 out:bridge, connection-state:new,dnat src-mac ${ISP_MAC}, proto TCP (SYN), ${src}->${NAS.address}:443, NAT ${src}->(${PUBLIC_IP}:443->${NAS.address}:443), len 60`
+  }],
+  [0.6, () => {
+    const d = pick(devices)
+    return `BLOCK-SMTP forward: in:bridge out:ether1, connection-state:new src-mac ${d.mac}, proto TCP (SYN), ${d.address}:${randPort()}->74.125.140.27:25, len 60`
+  }],
+  [0.6, () => {
+    const d = pick(devices)
+    return `INVALID forward: in:bridge out:ether1, connection-state:invalid src-mac ${d.mac}, proto TCP (ACK,RST), ${d.address}:${randPort()}->142.250.74.46:443, len 40`
+  }],
+  [1, () => `DROP-FWD forward: in:ether1 out:bridge, connection-state:new src-mac ${ISP_MAC}, proto TCP (SYN), ${randIp()}:${randPort()}->${pick(devices).address}:${pick([22, 80, 445])}, len 52`]
+]
+const FIREWALL_WEIGHT = FIREWALL_EVENTS.reduce((s, [w]) => s + w, 0)
+function firewallEvent() {
+  let x = rand() * FIREWALL_WEIGHT
+  for (const [w, fn] of FIREWALL_EVENTS) if ((x -= w) <= 0) return fn()
+  return FIREWALL_EVENTS[0][1]()
 }
 function seedLog() {
   log('system,info', 'router rebooted')
@@ -379,7 +467,7 @@ function seedLog() {
   log('system,error,critical', 'login failure for user admin from 45.148.10.12 via ssh')
   log('wireless,info', '90:81:2A:6E:01:F2@wifi1: connected, signal strength -58')
   log('system,warning', 'NTP server dk.pool.ntp.org not reachable, trying next')
-  log('firewall,info', 'input: in:ether1 out:(unknown 0), proto TCP (SYN), 45.148.10.12:58122->85.191.20.17:22, len 60')
+  log('firewall,info', `DROP-IN input: in:ether1 out:(unknown 0), connection-state:new src-mac ${ISP_MAC}, proto TCP (SYN), 45.148.10.12:58122->${PUBLIC_IP}:22, len 60`)
 }
 const LOG_EVENTS = [
   () => {
@@ -394,7 +482,6 @@ const LOG_EVENTS = [
     const d = pick(devices)
     return ['wireless,info', `${d.mac}@wifi1: disconnected, group key timeout`]
   },
-  () => ['firewall,info', `input: in:ether1 out:(unknown 0), proto TCP (SYN), 45.148.10.${Math.floor(between(2, 250))}:${Math.floor(between(30000, 60000))}->${PUBLIC_IP}:22, len 60`],
   () => ['system,error,critical', `login failure for user root from 103.77.${Math.floor(between(1, 250))}.${Math.floor(between(1, 250))} via ssh`],
   () => ['wireguard,info', 'wireguard1: peer handshake completed']
 ]
@@ -449,6 +536,17 @@ function handleClient(socket) {
     send(['!trap', `=message=${message}`, ...t])
     send(['!done', ...t])
   }
+  // Streams started with =follow-only=, by tag.
+  const follows = new Map()
+  const stopFollow = (tag) => {
+    const f = follows.get(tag)
+    if (!f) return false
+    logFollowers.delete(f)
+    follows.delete(tag)
+    send(['!trap', '=category=2', '=message=interrupted', `.tag=${tag}`])
+    send(['!done', `.tag=${tag}`])
+    return true
+  }
 
   const onSentence = (ws) => {
     const cmd = ws[0]
@@ -478,7 +576,10 @@ function handleClient(socket) {
       return
     }
     if (!loggedIn) return trap(tag, 'not logged in')
-    if (cmd === '/cancel') return reply(tag, [])
+    if (cmd === '/cancel') {
+      stopFollow(attrs.tag)
+      return reply(tag, [])
+    }
 
     const now = Date.now()
     const filterProps = (recs) => {
@@ -505,7 +606,7 @@ function handleClient(socket) {
       case '/system/resource/print':
         return print([resource()])
       case '/system/routerboard/print':
-        return print([{ routerboard: 'true', 'board-name': 'hAP ax^3', model: 'C53UiG+5HPaxD2HPaxD', 'serial-number': 'HFE09ABC1234', 'firmware-type': 'ipq6000', 'factory-firmware': '7.5', 'current-firmware': '7.19.4', 'upgrade-firmware': '7.19.4' }])
+        return print([{ routerboard: 'true', 'board-name': 'hAP ax^3', model: 'C53UiG+5HPaxD2HPaxD', 'serial-number': 'HFE09ABC1234', 'firmware-type': 'ipq6000', 'factory-firmware': '7.5', 'current-firmware': VERSION.split(' ')[0], 'upgrade-firmware': VERSION.split(' ')[0] }])
       case '/system/health/print':
         if (NO_HEALTH) return reply(tag, [])
         if (ROS6) return print([{ voltage: '24.1', temperature: temp.toFixed(0), 'cpu-temperature': cpuTemp.toFixed(0) }])
@@ -550,8 +651,25 @@ function handleClient(socket) {
       case '/ip/dns/cache/all/print':
       case '/ip/dns/cache/print':
         return print(dnsRecords())
-      case '/log/print':
-        return print(LOG)
+      case '/log/print': {
+        const follow = 'follow-only' in attrs || 'follow' in attrs
+        if (!follow) return print(LOG)
+        if (NO_FOLLOW) return trap(tag, 'unknown parameter follow-only')
+        const t = tag !== undefined ? [`.tag=${tag}`] : []
+        const send1 = (r) => send(['!re', ...Object.entries(r).map(([k, v]) => `=${k}=${v}`), ...t])
+        if ('follow' in attrs) LOG.forEach(send1)
+        const f = { push: send1 }
+        follows.set(tag, f)
+        logFollowers.add(f)
+        return
+      }
+      case '/ip/firewall/filter/print':
+      case '/ip/firewall/raw/print':
+      case '/ip/firewall/nat/print':
+      case '/ip/firewall/mangle/print': {
+        const table = cmd.split('/')[3]
+        return print(RULES[table].map((r, i) => ({ '.id': `*${(i + 1).toString(16).toUpperCase()}`, ...r })))
+      }
       default:
         return trap(tag, 'no such command prefix')
     }
@@ -573,7 +691,10 @@ function handleClient(socket) {
     buf = buf.subarray(off)
   })
   socket.on('error', () => {})
-  socket.on('close', () => console.log(`[${IDENTITY}] ${remote} disconnected`))
+  socket.on('close', () => {
+    for (const f of follows.values()) logFollowers.delete(f)
+    console.log(`[${IDENTITY}] ${remote} disconnected`)
+  })
 }
 
 // ---------- Start ----------
@@ -585,6 +706,9 @@ setInterval(tick, 1000)
 setInterval(() => {
   if (rand() < 0.5) log(...pick(LOG_EVENTS)())
 }, 4000)
+setInterval(() => {
+  if (rand() < 0.7) log('firewall,info', firewallEvent())
+}, 1500)
 
 const server = flag('tls')
   ? tls.createServer({ cert: fs.readFileSync(opt('cert')), key: fs.readFileSync(opt('key')) }, handleClient)

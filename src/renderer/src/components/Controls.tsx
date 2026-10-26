@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
 export function SearchBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
@@ -26,7 +26,7 @@ export function ButtonGroup<T extends string>({ value, options, onChange }: { va
   )
 }
 
-export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+export function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose()
@@ -37,7 +37,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label={title}>
+      <div className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
         <div className="panel-head">
           {title}
           <button className="modal-close" onClick={onClose} title="Close">
@@ -59,6 +59,70 @@ export function Panel({ title, aside, children, className, bodyClass }: { title:
       </div>
       <div className={bodyClass ?? 'panel-body'}>{children}</div>
     </section>
+  )
+}
+
+export type MenuItem = { label: string; onClick: () => void; disabled?: boolean } | 'separator'
+
+export interface MenuState {
+  x: number
+  y: number
+  items: MenuItem[]
+}
+
+/** Right-click menu at the mouse position. Closes on click outside, Escape or scrolling. */
+export function ContextMenu({ menu, onClose }: { menu: MenuState; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [pos, setPos] = useState({ left: menu.x, top: menu.y })
+
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    const r = el.getBoundingClientRect()
+    setPos({ left: Math.min(menu.x, window.innerWidth - r.width - 4), top: Math.min(menu.y, window.innerHeight - r.height - 4) })
+  }, [menu])
+
+  useEffect(() => {
+    const close = (e: Event): void => {
+      if (e.type === 'mousedown' && ref.current?.contains(e.target as Node)) return
+      if (e.type === 'keydown' && (e as KeyboardEvent).key !== 'Escape') return
+      onClose()
+    }
+    window.addEventListener('mousedown', close)
+    window.addEventListener('keydown', close)
+    window.addEventListener('wheel', close, { passive: true })
+    window.addEventListener('blur', close)
+    window.addEventListener('resize', close)
+    return () => {
+      window.removeEventListener('mousedown', close)
+      window.removeEventListener('keydown', close)
+      window.removeEventListener('wheel', close)
+      window.removeEventListener('blur', close)
+      window.removeEventListener('resize', close)
+    }
+  }, [onClose])
+
+  return (
+    <div className="menu" ref={ref} style={pos} role="menu" onContextMenu={(e) => e.preventDefault()}>
+      {menu.items.map((item, i) =>
+        item === 'separator' ? (
+          <hr key={i} />
+        ) : (
+          <button
+            key={i}
+            role="menuitem"
+            disabled={item.disabled}
+            title={item.label}
+            onClick={() => {
+              onClose()
+              item.onClick()
+            }}
+          >
+            {item.label}
+          </button>
+        )
+      )}
+    </div>
   )
 }
 

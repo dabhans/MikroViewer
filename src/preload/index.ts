@@ -1,8 +1,11 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
 import type { MikroApi, SessionEvent } from '../shared/types'
 
+const themeArg = process.argv.find((a) => a.startsWith('--mv-theme='))
+
 const api: MikroApi = {
   platform: process.platform,
+  initialTheme: themeArg?.endsWith('=dark') ? 'dark' : 'light',
   listProfiles: () => ipcRenderer.invoke('profiles:list'),
   saveProfile: (input) => ipcRenderer.invoke('profiles:save', input),
   deleteProfile: (id) => ipcRenderer.invoke('profiles:delete', id),
@@ -12,8 +15,19 @@ const api: MikroApi = {
   disconnect: (id) => ipcRenderer.invoke('session:disconnect', id),
   focus: (id) => ipcRenderer.send('session:focus', id),
   routerLog: (id) => ipcRenderer.invoke('session:routerLog', id),
-  clearConnectionLog: (id) => ipcRenderer.invoke('connlog:clear', id),
-  exportConnectionLog: (id) => ipcRenderer.invoke('connlog:export', id),
+  queryLogs: (q) => ipcRenderer.invoke('logs:query', q),
+  exportLogs: (req) => ipcRenderer.invoke('logs:export', req),
+  logStorage: () => ipcRenderer.invoke('logs:storage'),
+  deleteLogs: () => ipcRenderer.invoke('logs:delete'),
+  openLogFolder: () => ipcRenderer.invoke('logs:openFolder'),
+  getSettings: () => ipcRenderer.invoke('settings:get'),
+  setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
+  appInfo: () => ipcRenderer.invoke('app:info'),
+  updateStatus: () => ipcRenderer.invoke('update:status'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installUpdate: () => ipcRenderer.invoke('update:install'),
+  openExternal: (url) => ipcRenderer.invoke('shell:openExternal', url),
   onEvent: (cb) => {
     const handler = (_e: IpcRendererEvent, event: SessionEvent): void => cb(event)
     ipcRenderer.on('mv:event', handler)

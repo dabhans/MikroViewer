@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 
 export interface Column<T> {
   key: string
@@ -28,15 +28,20 @@ interface Props<T> {
   initialSort?: SortState
   empty?: string
   onRowClick?: (row: T) => void
+  selectedKey?: string | null
+  onCellContextMenu?: (row: T, columnKey: string, e: React.MouseEvent) => void
+  /** Called when the view reaches or leaves the top row. */
+  onTopChange?: (atTop: boolean) => void
 }
 
 const OVERSCAN = 10
 
 /** Virtualised grid – only visible rows are rendered, so thousands of connections are fine. */
-export function DataTable<T>({ rows, columns, rowKey, rowHeight = 25, initialSort, empty, onRowClick }: Props<T>) {
+export function DataTable<T>({ rows, columns, rowKey, rowHeight = 25, initialSort, empty, onRowClick, selectedKey, onCellContextMenu, onTopChange }: Props<T>) {
   const [sort, setSort] = useState<SortState | undefined>(initialSort)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState({ top: 0, height: 800 })
+  const atTop = viewport.top < rowHeight
 
   useLayoutEffect(() => {
     const el = scrollRef.current
@@ -47,6 +52,8 @@ export function DataTable<T>({ rows, columns, rowKey, rowHeight = 25, initialSor
     ro.observe(el)
     return () => ro.disconnect()
   }, [])
+
+  useEffect(() => onTopChange?.(atTop), [atTop, onTopChange])
 
   const sortFn = columns.find((c) => c.key === sort?.key)?.sort
   const sorted = useMemo(() => {
@@ -99,20 +106,27 @@ export function DataTable<T>({ rows, columns, rowKey, rowHeight = 25, initialSor
           </div>
         ) : (
           <div className="table-body" style={{ height: sorted.length * rowHeight, minWidth }}>
-            {visible.map((row, i) => (
-              <div
-                key={rowKey(row)}
-                className={`tr${(start + i) % 2 ? ' alt' : ''}${onRowClick ? ' clickable' : ''}`}
-                style={{ top: (start + i) * rowHeight, height: rowHeight, gridTemplateColumns: template }}
-                onClick={onRowClick ? () => onRowClick(row) : undefined}
-              >
-                {columns.map((c) => (
-                  <div key={c.key} className={`td${c.align === 'right' ? ' right' : ''}`}>
-                    {c.render(row)}
-                  </div>
-                ))}
-              </div>
-            ))}
+            {visible.map((row, i) => {
+              const key = rowKey(row)
+              return (
+                <div
+                  key={key}
+                  className={`tr${(start + i) % 2 ? ' alt' : ''}${onRowClick ? ' clickable' : ''}${key === selectedKey ? ' selected' : ''}`}
+                  style={{ top: (start + i) * rowHeight, height: rowHeight, gridTemplateColumns: template }}
+                  onClick={onRowClick ? () => onRowClick(row) : undefined}
+                >
+                  {columns.map((c) => (
+                    <div
+                      key={c.key}
+                      className={`td${c.align === 'right' ? ' right' : ''}`}
+                      onContextMenu={onCellContextMenu ? (e) => onCellContextMenu(row, c.key, e) : undefined}
+                    >
+                      {c.render(row)}
+                    </div>
+                  ))}
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

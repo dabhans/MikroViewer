@@ -1,9 +1,9 @@
-export type Tab = 'overview' | 'connections' | 'connlog' | 'dhcp' | 'interfaces' | 'log'
+export type Tab = 'overview' | 'connections' | 'logs' | 'dhcp' | 'interfaces' | 'log'
 
 export const TABS: { id: Tab; label: string }[] = [
-  { id: 'overview', label: 'Dashboard' },
+  { id: 'overview', label: 'Overview' },
   { id: 'connections', label: 'Connections' },
-  { id: 'connlog', label: 'Connection Log' },
+  { id: 'logs', label: 'Logs' },
   { id: 'dhcp', label: 'DHCP Leases' },
   { id: 'interfaces', label: 'Interfaces' },
   { id: 'log', label: 'System Log' }

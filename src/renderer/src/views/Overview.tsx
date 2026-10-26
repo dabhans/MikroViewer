@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import type { RouterProfile, SessionStatus } from '../../../shared/types'
 import type { RouterData } from '../store'
 import type { Tab } from '../tabs'
 import { LineChart } from '../components/Charts'
@@ -8,7 +9,10 @@ import { formatBps, formatBytes, formatDuration, formatNumber, formatSensor } fr
 
 interface Props {
   data: RouterData
+  profile: RouterProfile
+  status: SessionStatus
   onNavigate: (tab: Tab, search?: string) => void
+  onEdit: () => void
 }
 
 function barColor(pct: number): string {
@@ -31,7 +35,7 @@ function Usage({ label, pct, value }: { label: string; pct: number; value: strin
 
 const pctFormat = (v: number): string => `${Math.round(v)} %`
 
-export function OverviewView({ data, onNavigate }: Props) {
+export function OverviewView({ data, profile, status, onNavigate, onEdit }: Props) {
   const o = data.overview
   const topSources = useMemo(
     () =>
@@ -54,7 +58,14 @@ export function OverviewView({ data, onNavigate }: Props) {
   return (
     <div className="page scroll">
       <div className="toolbar">
-        <h1 className="page-title">Dashboard</h1>
+        <h1 className="page-title">Overview</h1>
+        <span className="spacer" />
+        <button className="btn" onClick={onEdit}>
+          Edit Router
+        </button>
+        <button className="btn" onClick={() => void window.api.disconnect(profile.id)}>
+          Disconnect
+        </button>
       </div>
       <div className="dash">
         <Panel title="System Information">
@@ -63,6 +74,14 @@ export function OverviewView({ data, onNavigate }: Props) {
               <tr>
                 <td>Hostname</td>
                 <td>{sys?.identity}</td>
+              </tr>
+              <tr>
+                <td>Address</td>
+                <td>
+                  {profile.host}:{profile.port}
+                  {profile.useTls ? ' (TLS)' : ''}
+                  {status.state === 'reconnecting' ? ' – reconnecting' : ''}
+                </td>
               </tr>
               <tr>
                 <td>Model</td>
