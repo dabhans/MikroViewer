@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { LogAction, LogEntry, LogQueryResult } from '../../../shared/types'
+import type { LogAction, LogEntry, LogQueryResult, SessionEndReason } from '../../../shared/types'
 import { FIELDS, addTerm, compileQuery, filterTerm, type LogPredicate } from '../../../shared/logquery'
-import { Cell, DataTable, type Column } from '../components/DataTable'
+import { Cell, DataTable, copyItems, type Column } from '../components/DataTable'
 import { ContextMenu, Panel, type MenuItem, type MenuState } from '../components/Controls'
+import { FirewallLoggingDialog, nothingLogs, useFirewallStatus } from '../components/FirewallLogging'
 import { Timeline } from '../components/Timeline'
 import { cleanError } from '../components/RouterForm'
 import { formatBytes, formatDateTime, formatDuration, formatNumber, formatTime, ipSortKey } from '../format'
@@ -36,6 +37,13 @@ const QUERIES: { label: string; query: string }[] = [
 
 const ACTION_LABEL: Record<LogAction, string> = { accept: 'Accept', drop: 'Drop', reject: 'Reject', nat: 'NAT', log: 'Log' }
 
+const END_REASON: Record<SessionEndReason, string> = {
+  fin: 'Closed (TCP FIN)',
+  reset: 'Reset (TCP RST)',
+  'aged-out': 'Timed out',
+  lost: 'Unknown – MikroViewer was disconnected'
+}
+
 function ActionTag({ action }: { action: LogAction }) {
   return (
     <span className={`action ${action}`}>
@@ -47,7 +55,7 @@ function ActionTag({ action }: { action: LogAction }) {
 
 const isToday = (t: number): boolean => new Date(t).toDateString() === new Date().toDateString()
 
-/** "≥ 4m" when the session started before MikroViewer saw it; unknown when that's all we know. */
+/** "≥ 4m" when MikroViewer didn't see the start or the end; unknown when that's all we know. */
 function durationText(e: LogEntry): string | undefined {
   if (e.durationSec === undefined || (e.approx && e.durationSec < 1)) return undefined
   return `${e.approx ? '≥ ' : ''}${formatDuration(e.durationSec)}`
@@ -57,7 +65,6 @@ function Duration({ e }: { e: LogEntry }) {
   if (e.type !== 'session') return null
   const text = durationText(e)
   if (text) return <span className="num">{text}</span>
-  if (e.active) return <span className="muted">Active</span>
   return (
     <span className="muted" title="MikroViewer did not see when the session started or ended">
       Unknown
@@ -65,10 +72,13 @@ function Duration({ e }: { e: LogEntry }) {
   )
 }
 
+const withPort = (ip: string, port?: number): string | undefined => (ip && port !== undefined ? `${ip}:${port}` : undefined)
+
 const columns: Column<LogEntry>[] = [
   {
     key: 'time',
     header: 'Time',
+    title: 'When the session ended, or when the router logged the packet',
     width: 100,
     render: (e) => (
       <span className="num" title={formatDateTime(e.t)}>
@@ -83,16 +93,16 @@ const columns: Column<LogEntry>[] = [
   {
     key: 'src',
     header: 'Source',
-    width: 160,
-    grow: 1.2,
+    width: 170,
+    copy: (e) => [e.src, e.srcName, withPort(e.src, e.srcPort), e.srcMac],
     render: (e) => <Cell main={e.srcName ?? e.src} sub={e.srcName ? e.src : undefined} title={[e.srcName, e.src, e.srcMac].filter(Boolean).join('\n')} />,
     sort: (e) => e.srcName?.toLowerCase() ?? ipSortKey(e.src)
   },
   {
     key: 'dst',
     header: 'Destination',
-    width: 180,
-    grow: 1.5,
+    width: 190,
+    copy: (e) => [e.dst, e.dstName, withPort(e.dst, e.dstPort), e.nat?.address],
     render: (e) => {
       const fwd = e.nat?.kind === 'dstnat' ? `→ ${e.nat.address}` : undefined
       return <Cell main={e.dstName ?? e.dst} sub={[e.dstName ? e.dst : undefined, fwd].filter(Boolean).join(' ')} title={[e.dstName, e.dst, fwd].filter(Boolean).join('\n')} />
@@ -100,22 +110,24 @@ const columns: Column<LogEntry>[] = [
     sort: (e) => e.dstName?.toLowerCase() ?? ipSortKey(e.dst)
   },
   { key: 'proto', header: 'Protocol', width: 64, render: (e) => (e.protocol ? <ProtocolTag protocol={e.protocol} /> : null), sort: (e) => e.protocol },
-  { key: 'dstPort', header: 'Dst Port', width: 62, align: 'right', render: (e) => <span className="num">{e.dstPort ?? ''}</span>, sort: (e) => e.dstPort ?? -1 },
+  { key: 'dstPort', header: 'Dst Port', width: 62, render: (e) => <span className="num">{e.dstPort ?? ''}</span>, sort: (e) => e.dstPort ?? -1 },
   { key: 'service', header: 'Service', width: 76, render: (e) => serviceName(e.protocol, e.dstPort) ?? '', sort: (e) => serviceName(e.protocol, e.dstPort) ?? '~' },
   {
     key: 'rule',
     header: 'Rule',
-    width: 130,
-    grow: 1,
-    render: (e) => <Cell main={e.rule ?? e.ruleNumber ?? ''} sub={e.chain} title={[e.rule, e.ruleNumber, e.chain && `chain ${e.chain}`].filter(Boolean).join('\n')} />,
-    sort: (e) => (e.rule ?? e.chain ?? '~').toLowerCase()
+    width: 140,
+    render: (e) => {
+      const main = e.rule ?? e.ruleNumber
+      return <Cell main={main ?? e.chain ?? ''} sub={main ? e.chain : undefined} title={[e.rule, e.ruleNumber, e.chain && `chain ${e.chain}`].filter(Boolean).join('\n')} />
+    },
+    sort: (e) => (e.rule ?? e.chain ?? '~').toLowerCase(),
+    copy: (e) => [e.rule, e.ruleNumber, e.chain, e.prefix]
   },
-  { key: 'duration', header: 'Duration', width: 72, align: 'right', render: (e) => <Duration e={e} />, sort: (e) => e.durationSec ?? -1, sortDesc: true },
+  { key: 'duration', header: 'Duration', width: 72, render: (e) => <Duration e={e} />, sort: (e) => e.durationSec ?? -1, sortDesc: true },
   {
     key: 'bytes',
     header: 'Bytes',
     width: 72,
-    align: 'right',
     render: (e) =>
       e.txBytes !== undefined || e.rxBytes !== undefined ? (
         <span className="num" title={`Received ${formatBytes(e.rxBytes)} / Sent ${formatBytes(e.txBytes)}`}>
@@ -169,11 +181,15 @@ function KV({ items }: { items: [string, ReactNode][] }) {
   )
 }
 
-function Details({ e, onClose }: { e: LogEntry; onClose: () => void }) {
-  const end = e.end !== undefined ? formatDateTime(e.end) : e.active ? 'Active' : 'Unknown'
+function Details({ e, onClose, height, onResizeStart }: { e: LogEntry; onClose: () => void; height: number; onResizeStart: (ev: React.MouseEvent) => void }) {
+  const start = e.start !== undefined ? `${e.startBefore ? 'At or before ' : ''}${formatDateTime(e.start)}` : undefined
+  const end = `${e.endReason === 'lost' ? 'At or after ' : ''}${formatDateTime(e.t)}`
   return (
-    <Panel
+    <>
+      <div className="splitter" onMouseDown={onResizeStart} title="Drag to resize" />
+      <Panel
       className="details"
+      style={{ height }}
       title={`${e.type === 'session' ? 'Session' : 'Firewall record'} · ${formatDateTime(e.t)}`}
       aside={
         <button className="modal-close" onClick={onClose} title="Close">
@@ -203,9 +219,10 @@ function Details({ e, onClose }: { e: LogEntry; onClose: () => void }) {
           <h3>Session</h3>
           <KV
             items={[
-              ['Start', `${e.approx ? 'Before ' : ''}${formatDateTime(e.t)}`],
+              ['Start', start],
               ['End', end],
-              ['Duration', durationText(e) ?? (e.active ? undefined : 'Unknown')],
+              ['Duration', durationText(e) ?? 'Unknown'],
+              ['End reason', e.endReason ? END_REASON[e.endReason] : undefined],
               ['Received', e.rxBytes !== undefined ? formatBytes(e.rxBytes) : undefined],
               ['Sent', e.txBytes !== undefined ? formatBytes(e.txBytes) : undefined]
             ]}
@@ -238,7 +255,8 @@ function Details({ e, onClose }: { e: LogEntry; onClose: () => void }) {
           )}
         </>
       )}
-    </Panel>
+      </Panel>
+    </>
   )
 }
 
@@ -268,18 +286,20 @@ function QueryHelp({ onClose }: { onClose: () => void }) {
   )
 }
 
-function mergeLive(prev: LogQueryResult, added: LogEntry[], updated: LogEntry[], pred: LogPredicate): LogQueryResult {
-  const upd = new Map(updated.map((u) => [u.id, u]))
-  let entries = prev.entries.map((e) => upd.get(e.id) ?? e)
-  const present = new Set(entries.map((e) => e.id))
+function mergeLive(prev: LogQueryResult, added: LogEntry[], pred: LogPredicate): LogQueryResult {
+  const present = new Set(prev.entries.map((e) => e.id))
   const fresh: LogEntry[] = []
-  for (const e of [...added, ...updated]) {
+  for (const e of added) {
     if (present.has(e.id) || e.t < prev.from || !pred(e)) continue
     present.add(e.id)
     fresh.push(e)
   }
-  if (fresh.length === 0 && upd.size === 0) return prev
-  entries = fresh.concat(entries).slice(0, LIMIT)
+  if (fresh.length === 0) return prev
+  // Newest first – a long session that just ended can have ended before a record already shown.
+  const entries = fresh
+    .sort((a, b) => b.t - a.t || b.id - a.id)
+    .concat(prev.entries)
+    .slice(0, LIMIT)
 
   const h = prev.histogram
   const counts = [...h.counts]
@@ -297,7 +317,9 @@ function mergeLive(prev: LogQueryResult, added: LogEntry[], updated: LogEntry[],
   return { ...prev, entries, total: prev.total + fresh.length, to: Math.max(prev.to, Date.now()), histogram: { ...h, counts, blocked } }
 }
 
-export function LogsView({ routerId }: { routerId: string }) {
+const DETAILS_MIN = 120
+
+export function LogsView({ routerId, connected }: { routerId: string; connected: boolean }) {
   const [input, setInput] = useState(() => storageGet('mv.logs.query') ?? '')
   const [query, setQuery] = useState(input)
   const [range, setRange] = useState<RangeId>(() => {
@@ -315,8 +337,13 @@ export function LogsView({ routerId }: { routerId: string }) {
   const [atTop, setAtTop] = useState(true)
   const [buffered, setBuffered] = useState(0)
   const [notice, setNotice] = useState<string | null>(null)
+  const [fwDialog, setFwDialog] = useState(false)
+  const [detailsHeight, setDetailsHeight] = useState(() => Math.max(DETAILS_MIN, Number(storageGet('mv.logs.details')) || 230))
+  const bodyRef = useRef<HTMLDivElement>(null)
   const reqId = useRef(0)
-  const pending = useRef<{ added: LogEntry[]; updated: LogEntry[] }>({ added: [], updated: [] })
+  const pending = useRef<LogEntry[]>([])
+  // Checked once per visit: a router where no rule logs can't show blocked traffic.
+  const fw = useFirewallStatus(routerId, connected)
 
   const compiled = useMemo(() => compileQuery(query), [query])
   const inputError = useMemo(() => {
@@ -341,7 +368,7 @@ export function LogsView({ routerId }: { routerId: string }) {
     try {
       const res = await window.api.queryLogs({ routerId, query, from, to, limit: LIMIT })
       if (id !== reqId.current) return
-      pending.current = { added: [], updated: [] }
+      pending.current = []
       setBuffered(0)
       setResult(res)
       setError(res.error ?? null)
@@ -361,23 +388,22 @@ export function LogsView({ routerId }: { routerId: string }) {
 
   const applyPending = useCallback(() => {
     const pred = live$.current.predicate
-    const { added, updated } = pending.current
-    pending.current = { added: [], updated: [] }
+    const added = pending.current
+    pending.current = []
     setBuffered(0)
-    if (!pred || (added.length === 0 && updated.length === 0)) return
-    setResult((prev) => (prev ? mergeLive(prev, added, updated, pred) : prev))
+    if (!pred || added.length === 0) return
+    setResult((prev) => (prev ? mergeLive(prev, added, pred) : prev))
   }, [])
 
-  // Live: new and finished records are pushed from the main process.
+  // Live: ended sessions and logged packets are pushed from the main process.
   useEffect(
     () =>
       window.api.onEvent((ev) => {
         if (ev.type !== 'log' || ev.id !== routerId) return
         const s = live$.current
         if (!s.isLive || !s.predicate) return
-        pending.current.added.push(...ev.added)
-        pending.current.updated.push(...ev.updated)
-        if (s.holdBack) setBuffered(pending.current.added.filter((e) => s.predicate!(e)).length)
+        pending.current.push(...ev.added)
+        if (s.holdBack) setBuffered(pending.current.filter((e) => s.predicate!(e)).length)
         else applyPending()
       }),
     [routerId, applyPending]
@@ -433,11 +459,32 @@ export function LogsView({ routerId }: { routerId: string }) {
       items.push({ label: `Filter: ${f.label}`, onClick: () => apply(addTerm(query, f.term)) })
       items.push({ label: `Exclude: ${f.label}`, onClick: () => apply(addTerm(query, f.term, true)) })
       items.push('separator')
-      items.push({ label: `Copy "${f.value}"`, onClick: () => void navigator.clipboard.writeText(f.value) })
     }
+    items.push(...copyItems(columns, e, key, ev.currentTarget as HTMLElement))
     if (e.message) items.push({ label: 'Copy message', onClick: () => void navigator.clipboard.writeText(e.message!) })
-    if (items.length === 0) return
     setMenu({ x: ev.clientX, y: ev.clientY, items })
+  }
+
+  // Dragging the bar above the details makes them taller or shorter.
+  const startResize = (ev: React.MouseEvent): void => {
+    ev.preventDefault()
+    const startY = ev.clientY
+    const startH = detailsHeight
+    const max = Math.max(DETAILS_MIN, (bodyRef.current?.clientHeight ?? 600) - 120)
+    let h = startH
+    const move = (e: MouseEvent): void => {
+      h = Math.round(Math.min(max, Math.max(DETAILS_MIN, startH + startY - e.clientY)))
+      setDetailsHeight(h)
+    }
+    const up = (): void => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+      document.body.classList.remove('resizing')
+      storageSet('mv.logs.details', String(h))
+    }
+    document.body.classList.add('resizing')
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
   }
 
   const rangeLabel = (r: { from: number; to: number }): string => {
@@ -505,9 +552,22 @@ export function LogsView({ routerId }: { routerId: string }) {
         <button className="btn" onClick={exportCsv} disabled={!result || result.total === 0}>
           Export CSV
         </button>
+        <button className="btn" onClick={() => setFwDialog(true)} title="Which firewall rules log, and whether the router's log arrives">
+          Firewall Logging
+        </button>
       </div>
 
       {help && <QueryHelp onClose={() => setHelp(false)} />}
+
+      {fw.status && nothingLogs(fw.status) && (
+        <div className="notice">
+          <span>No firewall rule on this router has logging turned on, so blocked traffic can’t show up here – only sessions that were let through.</span>
+          <span className="spacer" />
+          <button className="btn small" onClick={() => setFwDialog(true)}>
+            Show rules
+          </button>
+        </div>
+      )}
 
       <div className="toolbar">
         {inputError ? <span className="query-error">{inputError}</span> : error ? <span className="query-error">{error}</span> : null}
@@ -525,7 +585,7 @@ export function LogsView({ routerId }: { routerId: string }) {
         <span className="count">{notice ?? status}</span>
       </div>
 
-      <div className="logs-body">
+      <div className="logs-body" ref={bodyRef}>
         {result && result.histogram.counts.length > 0 && (
           <Timeline
             histogram={result.histogram}
@@ -546,10 +606,26 @@ export function LogsView({ routerId }: { routerId: string }) {
           onTopChange={setAtTop}
           empty={loading ? 'Searching…' : compiled.ok && compiled.empty ? 'No records in this period' : 'No records match the query'}
         />
-        {selected && <Details e={entries.find((x) => x.id === selected.id) ?? selected} onClose={() => setSelected(null)} />}
+        {selected && (
+          <Details
+            e={entries.find((x) => x.id === selected.id) ?? selected}
+            onClose={() => setSelected(null)}
+            height={detailsHeight}
+            onResizeStart={startResize}
+          />
+        )}
       </div>
 
       {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
+      {fwDialog && (
+        <FirewallLoggingDialog
+          routerId={routerId}
+          onClose={() => {
+            setFwDialog(false)
+            if (connected) void fw.reload()
+          }}
+        />
+      )}
     </div>
   )
 }

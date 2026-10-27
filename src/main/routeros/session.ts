@@ -1,13 +1,14 @@
 // One RouterSession per router profile. It keeps the API connection open, polls data in the
 // background, reconnects automatically and writes the log: sessions by diffing snapshots of the
-// connection table, firewall records from the router's log.
+// connection table (written when they end), firewall records from the router's log.
 
 import { RouterOSClient, RouterOSError, type ApiRecord, type Stream } from './client'
 import { bool, num, parseDuration, parseHealth, primaryTemperature, splitHostPort, stripPrefix } from './parse'
-import { matchRule, parseFirewallMessage, type FirewallRule, type RuleTable } from '../logs/firewall'
+import { MATCH_PROPS, describeMatch, matchRule, parseFirewallMessage, type FirewallRule, type RuleTable } from '../logs/firewall'
 import type { LogSink, NewLogEntry } from '../logs/store'
 import type {
   ConnectionRow,
+  FirewallLogStatus,
   HealthSensor,
   InterfaceRow,
   LeaseRow,
@@ -16,6 +17,7 @@ import type {
   ResourceSample,
   RouterLogEntry,
   RouterSummary,
+  SessionEndReason,
   SessionEvent,
   SessionStatus,
   SystemInfo,
@@ -73,6 +75,7 @@ const CONN_PROPLIST = [
 ].join(',')
 
 const RULE_TABLES: RuleTable[] = ['filter', 'raw', 'nat', 'mangle']
+const RULE_PROPLIST = ['.id', 'chain', 'action', 'log', 'log-prefix', 'comment', 'disabled', 'dynamic', 'packets', ...MATCH_PROPS].join(',')
 
 function connectionInterval(total: number): number {
   if (total <= 2000) return 3000
@@ -111,16 +114,28 @@ interface Tracked {
   seenAt: number
   /** Protocol and endpoints – an id reused after a router reboot is a different connection. */
   key: string
-  logId?: number
-  /** Names written when the session was logged, so a name found later is added at close. */
-  loggedNames?: { src?: string; dst?: string }
+  /** It already existed when MikroViewer started watching, so its real start is unknown. */
+  startBefore: boolean
   /** A closed TCP connection stays in the table for a while (time-wait) – it ended when that began. */
   closingAt?: number
 }
 
-function sessionFields(row: ConnectionRow): NewLogEntry {
+/** TCP states that mean the connection was closed: by FIN, or by RST ("close"). */
+const FIN_STATES = new Set(['fin-wait', 'close-wait', 'last-ack', 'time-wait'])
+
+function endReason(tr: Tracked): SessionEndReason {
+  const state = tr.row.tcpState
+  if (state === 'close') return 'reset'
+  if (state && FIN_STATES.has(state)) return 'fin'
+  return 'aged-out'
+}
+
+/** The log record of a connection that has ended. `lost`: it went away while we weren't watching. */
+function sessionRecord(tr: Tracked, lost: boolean): NewLogEntry {
+  const row = tr.row
+  const end = tr.closingAt ?? tr.seenAt
   return {
-    t: row.firstSeen,
+    t: end,
     type: 'session',
     action: 'accept',
     protocol: row.protocol,
@@ -130,7 +145,14 @@ function sessionFields(row: ConnectionRow): NewLogEntry {
     dst: row.dstAddress,
     dstPort: row.dstPort,
     dstName: row.dstName,
-    nat: row.nat
+    nat: row.nat,
+    start: row.firstSeen,
+    ...(tr.startBefore ? { startBefore: true } : {}),
+    endReason: lost ? 'lost' : endReason(tr),
+    durationSec: Math.max(0, (end - row.firstSeen) / 1000),
+    ...(lost || tr.startBefore ? { approx: true } : {}),
+    txBytes: row.txBytes,
+    rxBytes: row.rxBytes
   }
 }
 
@@ -163,6 +185,8 @@ export class RouterSession {
   private logStream?: Stream
   private noLogStream = false
   private lastLogId = -1
+  /** What the firewall log has delivered since connecting – shown under Firewall Logging. */
+  private fwFeed: { feed: 'stream' | 'poll'; since: number; lines: number; unparsed: number; lastAt?: number } | null = null
 
   private leases: LeaseRow[] = []
   private leaseError?: string
@@ -200,13 +224,8 @@ export class RouterSession {
     this.stopLoops()
     this.client?.close()
     this.client = null
-    this.abandonSessions()
+    this.fwFeed = null
     this.setStatus({ id: this.id, state: 'disconnected' })
-  }
-
-  /** While nobody is watching, open sessions can't be followed – their end becomes unknown. */
-  private abandonSessions(): void {
-    for (const t of this.tracked.values()) if (t.logId !== undefined) this.log.abandon(t.logId)
   }
 
   dispose(): void {
@@ -260,7 +279,6 @@ export class RouterSession {
         this.scheduleRetry(e.message)
       } else {
         this.wanted = false
-        this.abandonSessions()
         this.setStatus({ id: this.id, state: 'error', error: e.message })
       }
     }
@@ -270,6 +288,7 @@ export class RouterSession {
     if (gen !== this.generation) return
     this.stopLoops()
     this.client = null
+    this.fwFeed = null
     if (this.wanted) this.scheduleRetry(err.message)
     else this.setStatus({ id: this.id, state: 'disconnected' })
   }
@@ -302,18 +321,23 @@ export class RouterSession {
   private startFirewallLog(gen: number): void {
     const c = this.client
     if (!c) return
+    const counts = this.fwFeed ?? { lines: 0, unparsed: 0 }
     if (this.noLogStream) {
       this.lastLogId = -1
+      this.fwFeed = { ...counts, feed: 'poll', since: Date.now() }
       this.loop(gen, () => LOG_POLL_INTERVAL, (c) => this.pollRouterLog(c))
       return
     }
+    this.fwFeed = { ...counts, feed: 'stream', since: Date.now() }
     this.logStream = c.stream(['/log/print', '=follow-only='], (r) => this.onRouterLog(r))
-    this.logStream.done.catch((err) => {
+    const fallBack = (): void => {
       if (gen !== this.generation || c.isClosed) return
-      if (err instanceof RouterOSError && err.kind === 'trap') {
-        this.noLogStream = true
-        this.startFirewallLog(gen)
-      }
+      this.noLogStream = true
+      this.startFirewallLog(gen)
+    }
+    // A router that doesn't know follow-only either refuses it or prints once and stops.
+    this.logStream.done.then(fallBack, (err) => {
+      if (err instanceof RouterOSError && err.kind === 'trap') fallBack()
     })
   }
 
@@ -331,6 +355,11 @@ export class RouterSession {
     const message = r.message ?? ''
     const packet = parseFirewallMessage(message)
     const t = Date.now()
+    if (this.fwFeed) {
+      this.fwFeed.lines++
+      this.fwFeed.lastAt = t
+      if (!packet) this.fwFeed.unparsed++
+    }
     if (!packet) {
       this.log.add({ t, type: 'firewall', action: 'log', protocol: '', src: '', dst: '', message })
       return
@@ -506,23 +535,23 @@ export class RouterSession {
       const key = `${r.protocol}|${formatEndpoint(src)}|${formatEndpoint(dst)}`
       let prev = this.tracked.get(id)
       if (prev && prev.key !== key) {
-        this.closeSession(prev, true)
+        this.log.add(sessionRecord(prev, true))
         prev = undefined
       }
       const row = this.toConnectionRow(r, src, dst, now, prev)
       const closing = row.tcpState === 'time-wait' || row.tcpState === 'close'
-      const t: Tracked = { row, seenAt: now, key, logId: prev?.logId, loggedNames: prev?.loggedNames, closingAt: prev?.closingAt ?? (closing ? now : undefined) }
-      if (!prev && !baseline) {
-        t.logId = this.log.add(sessionFields(row), true)
-        t.loggedNames = { src: row.srcName, dst: row.dstName }
-      } else if (prev?.logId !== undefined && baseline) {
-        this.log.resume(prev.logId)
-      }
       rows.push(row)
-      current.set(id, t)
+      current.set(id, {
+        row,
+        seenAt: now,
+        key,
+        // Right after connecting, everything in the table was already open.
+        startBefore: prev ? prev.startBefore : baseline,
+        closingAt: prev?.closingAt ?? (closing ? now : undefined)
+      })
     }
-    // Gone since the last snapshot. Right after (re)connecting we don't know when they closed.
-    for (const [id, prev] of this.tracked) if (!current.has(id)) this.closeSession(prev, baseline)
+    // Gone since the last snapshot: they have ended. Right after (re)connecting we don't know when.
+    for (const [id, prev] of this.tracked) if (!current.has(id)) this.log.add(sessionRecord(prev, baseline))
 
     this.tracked = current
     this.connBaseline = false
@@ -540,28 +569,6 @@ export class RouterSession {
       this.noConnProplist = true
       return c.print(path)
     }
-  }
-
-  private closeSession(prev: Tracked, approx: boolean): void {
-    const r = prev.row
-    const end = prev.closingAt ?? prev.seenAt
-    const closed = {
-      end,
-      durationSec: Math.max(0, (end - r.firstSeen) / 1000),
-      txBytes: r.txBytes,
-      rxBytes: r.rxBytes,
-      ...(approx ? { approx: true } : {})
-    }
-    if (prev.logId === undefined) {
-      // It existed before we started watching, so it was never logged as opened.
-      this.log.add({ ...sessionFields(r), ...closed, approx: true })
-      return
-    }
-    this.log.update(prev.logId, {
-      ...closed,
-      ...(r.srcName && r.srcName !== prev.loggedNames?.src ? { srcName: r.srcName } : {}),
-      ...(r.dstName && r.dstName !== prev.loggedNames?.dst ? { dstName: r.dstName } : {})
-    })
   }
 
   private toConnectionRow(r: ApiRecord, src: Endpoint, dst: Endpoint, now: number, prev?: Tracked): ConnectionRow {
@@ -700,22 +707,56 @@ export class RouterSession {
 
   /** The firewall rules tell which action and rule a logged packet belongs to. */
   private async loadRules(c: RouterOSClient): Promise<void> {
-    const tables = await Promise.all(
-      RULE_TABLES.map((t) => c.print(`/ip/firewall/${t}`, { '.proplist': 'chain,action,log,log-prefix,comment,disabled' }).catch(() => null))
-    )
+    const tables = await Promise.all(RULE_TABLES.map((t) => c.print(`/ip/firewall/${t}`, { '.proplist': RULE_PROPLIST }).catch(() => null)))
     if (tables.every((t) => t === null)) return
     this.rules = tables.flatMap((recs, ti) =>
       (recs ?? []).map((r, index) => ({
         table: RULE_TABLES[ti],
+        id: r['.id'] ?? '',
         index,
         chain: r.chain ?? '',
         action: r.action ?? '',
         prefix: r['log-prefix'] ?? '',
         comment: r.comment || undefined,
+        match: describeMatch(r),
         log: bool(r.log),
-        disabled: bool(r.disabled)
+        disabled: bool(r.disabled),
+        dynamic: bool(r.dynamic),
+        packets: r.packets !== undefined ? num(r.packets) : undefined
       }))
     )
+  }
+
+  /** For Firewall Logging: is the log arriving, and which filter and raw rules log. */
+  async firewallStatus(): Promise<FirewallLogStatus> {
+    const c = this.client
+    const connected = !!c && !c.isClosed && this.status.state === 'connected'
+    if (connected) await this.loadRules(c).catch(() => {})
+    const feed = this.fwFeed
+    return {
+      connected,
+      feed: feed?.feed,
+      since: feed?.since,
+      lines: feed?.lines ?? 0,
+      unparsed: feed?.unparsed ?? 0,
+      lastAt: feed?.lastAt,
+      rules: this.rules
+        .filter((r): r is FirewallRule & { table: 'filter' | 'raw' } => r.table === 'filter' || r.table === 'raw')
+        .map((r) => ({
+          id: r.id,
+          table: r.table,
+          number: r.index,
+          chain: r.chain,
+          action: r.action,
+          comment: r.comment,
+          match: r.match,
+          log: r.log || r.action === 'log',
+          prefix: r.prefix || undefined,
+          disabled: r.disabled,
+          dynamic: r.dynamic,
+          packets: r.packets
+        }))
+    }
   }
 
   private wanInterface(): string | undefined {

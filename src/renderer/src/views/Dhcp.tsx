@@ -71,7 +71,6 @@ export function DhcpView({ data, onShowConnections }: Props) {
         key: 'expires',
         header: 'Expires In',
         width: 84,
-        align: 'right',
         render: (l) => <span className="num">{formatDuration(l.expiresAfterSec)}</span>,
         sort: (l) => l.expiresAfterSec ?? Number.MAX_SAFE_INTEGER
       },
@@ -79,7 +78,6 @@ export function DhcpView({ data, onShowConnections }: Props) {
         key: 'seen',
         header: 'Last Seen',
         width: 84,
-        align: 'right',
         render: (l) => <span className="num">{formatDuration(l.lastSeenSec)}</span>,
         sort: (l) => l.lastSeenSec ?? Number.MAX_SAFE_INTEGER
       },
@@ -87,7 +85,6 @@ export function DhcpView({ data, onShowConnections }: Props) {
         key: 'conns',
         header: 'Connections',
         width: 90,
-        align: 'right',
         render: (l) => {
           const n = perIp.get(l.address) ?? 0
           return n > 0 ? (

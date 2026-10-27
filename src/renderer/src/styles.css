@@ -601,7 +601,6 @@ body[data-platform='darwin'] .header {
   width: 40%;
 }
 .props td:last-child {
-  text-align: right;
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 0;
@@ -616,7 +615,6 @@ body[data-platform='darwin'] .header {
   height: 26px;
 }
 .usage .value {
-  text-align: right;
   white-space: nowrap;
 }
 .bar {
@@ -651,9 +649,6 @@ body[data-platform='darwin'] .header {
 }
 .mini th:first-child {
   width: 40%;
-}
-.mini .r {
-  text-align: right;
 }
 .mini tbody tr {
   cursor: pointer;
@@ -851,11 +846,6 @@ body[data-platform='darwin'] .header {
 .th.sortable:hover {
   background: var(--th-hover);
 }
-.th.right,
-.td.right {
-  justify-content: flex-end;
-  text-align: right;
-}
 .table-body {
   position: relative;
 }
@@ -889,6 +879,7 @@ body[data-platform='darwin'] .header {
   white-space: nowrap;
   overflow: hidden;
   border-right: 1px solid var(--grid);
+  user-select: text;
 }
 .td > .cell {
   overflow: hidden;
@@ -937,7 +928,66 @@ body[data-platform='darwin'] .header {
 
 .details {
   flex: none;
-  height: 230px;
+}
+/* Sits in the gap above the details; dragging it resizes them. */
+.splitter {
+  flex: none;
+  height: 8px;
+  margin: -8px 0;
+  cursor: row-resize;
+  position: relative;
+}
+.splitter::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 3px;
+  width: 40px;
+  height: 2px;
+  margin-left: -20px;
+  background: var(--border);
+}
+.splitter:hover::after {
+  background: var(--accent);
+}
+body.resizing,
+body.resizing * {
+  cursor: row-resize !important;
+  user-select: none !important;
+}
+
+.fw-logging {
+  padding: 12px 14px;
+  user-select: text;
+}
+.fw-logging p {
+  margin: 0 0 10px;
+  line-height: 1.5;
+}
+.rules {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 10px;
+}
+.rules th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--text-2);
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-head);
+  white-space: nowrap;
+}
+.rules td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--grid);
+  vertical-align: top;
+}
+.rules tr.disabled td {
+  color: var(--muted);
+}
+.rules .rule-text {
+  word-break: break-word;
 }
 .details .panel-body {
   flex: 1;

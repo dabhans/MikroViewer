@@ -26,7 +26,7 @@ export function ButtonGroup<T extends string>({ value, options, onChange }: { va
   )
 }
 
-export function Modal({ title, onClose, children, wide }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean }) {
+export function Modal({ title, onClose, children, wide, width }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean; width?: number }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose()
@@ -37,7 +37,7 @@ export function Modal({ title, onClose, children, wide }: { title: string; onClo
 
   return (
     <div className="modal-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className={`modal${wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={title}>
+      <div className={`modal${wide ? ' wide' : ''}`} style={width ? { width: `min(${width}px, calc(100vw - 40px))` } : undefined} role="dialog" aria-modal="true" aria-label={title}>
         <div className="panel-head">
           {title}
           <button className="modal-close" onClick={onClose} title="Close">
@@ -50,9 +50,23 @@ export function Modal({ title, onClose, children, wide }: { title: string; onClo
   )
 }
 
-export function Panel({ title, aside, children, className, bodyClass }: { title: string; aside?: ReactNode; children: ReactNode; className?: string; bodyClass?: string }) {
+export function Panel({
+  title,
+  aside,
+  children,
+  className,
+  bodyClass,
+  style
+}: {
+  title: string
+  aside?: ReactNode
+  children: ReactNode
+  className?: string
+  bodyClass?: string
+  style?: React.CSSProperties
+}) {
   return (
-    <section className={`panel${className ? ` ${className}` : ''}`}>
+    <section className={`panel${className ? ` ${className}` : ''}`} style={style}>
       <div className="panel-head">
         {title}
         {aside !== undefined && <span className="aside">{aside}</span>}

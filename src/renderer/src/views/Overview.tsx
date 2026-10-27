@@ -207,18 +207,18 @@ export function OverviewView({ data, profile, status, onNavigate, onEdit }: Prop
             <thead>
               <tr>
                 <th>Source</th>
-                <th className="r">Conns</th>
-                <th className="r">Down</th>
-                <th className="r">Up</th>
+                <th>Conns</th>
+                <th>Down</th>
+                <th>Up</th>
               </tr>
             </thead>
             <tbody>
               {topSources.map((d) => (
                 <tr key={d.ip} onClick={() => onNavigate('connections', d.ip)} title={d.ip}>
                   <td>{d.name ?? d.ip}</td>
-                  <td className="r num">{d.connections}</td>
-                  <td className="r num">{formatBps(d.rxBps)}</td>
-                  <td className="r num">{formatBps(d.txBps)}</td>
+                  <td className="num">{d.connections}</td>
+                  <td className="num">{formatBps(d.rxBps)}</td>
+                  <td className="num">{formatBps(d.txBps)}</td>
                 </tr>
               ))}
               {topSources.length === 0 && (

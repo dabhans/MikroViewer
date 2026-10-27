@@ -155,14 +155,16 @@ export interface ConnectionRow {
 export type LogType = 'session' | 'firewall'
 export type LogAction = 'accept' | 'drop' | 'reject' | 'nat' | 'log'
 
+/** How a session ended. "lost": it closed while MikroViewer wasn't connected, some time after `t`. */
+export type SessionEndReason = 'fin' | 'reset' | 'aged-out' | 'lost'
+
 /**
- * One log record. Sessions come from the connection table (one record per connection,
- * completed with duration and bytes when it closes). Firewall records come from rules
- * with logging enabled.
+ * One log record. Sessions come from the connection table and are written when the connection
+ * closes, as a firewall's traffic log does. Firewall records come from rules with logging enabled.
  */
 export interface LogEntry {
   id: number
-  /** Start time (ms). */
+  /** When the session ended, or when the packet was logged (ms). */
   t: number
   type: LogType
   action: LogAction
@@ -177,14 +179,15 @@ export interface LogEntry {
   nat?: NatInfo
 
   // Sessions
-  end?: number
+  start?: number
+  /** The connection already existed when MikroViewer started watching – it began at or before `start`. */
+  startBefore?: boolean
+  endReason?: SessionEndReason
   durationSec?: number
-  /** The duration is a minimum: the connection existed before MikroViewer saw it, or closed while disconnected. */
+  /** The duration is a minimum (the start or the end wasn't seen). */
   approx?: boolean
   txBytes?: number
   rxBytes?: number
-  /** Still open on the router (only set in results from the main process). */
-  active?: boolean
 
   // Firewall
   chain?: string
@@ -234,6 +237,37 @@ export interface LogExportRequest {
   query: string
   from: number
   to: number
+}
+
+/** A filter or raw rule, for checking which rules log. */
+export interface FirewallRuleInfo {
+  /** RouterOS internal id, e.g. "*1A". */
+  id: string
+  table: 'filter' | 'raw'
+  /** Position in the table, as RouterOS numbers the rules. */
+  number: number
+  chain: string
+  action: string
+  comment?: string
+  /** What the rule matches, e.g. "src 10.35.0.0/24, dst 10.255.0.0/24". */
+  match: string
+  log: boolean
+  prefix?: string
+  disabled: boolean
+  dynamic: boolean
+  packets?: number
+}
+
+export interface FirewallLogStatus {
+  connected: boolean
+  /** How the router's log is read: streamed, or polled on routers that can't stream. */
+  feed?: 'stream' | 'poll'
+  since?: number
+  /** Firewall lines received since connecting. */
+  lines: number
+  unparsed: number
+  lastAt?: number
+  rules: FirewallRuleInfo[]
 }
 
 export interface RouterLogEntry {
@@ -294,8 +328,10 @@ export type SessionEvent =
   | { type: 'connections'; id: string; rows: ConnectionRow[]; total: number; throttled: boolean }
   | { type: 'leases'; id: string; rows: LeaseRow[]; error?: string }
   | { type: 'interfaces'; id: string; rows: InterfaceRow[] }
-  | { type: 'log'; id: string; added: LogEntry[]; updated: LogEntry[] }
+  | { type: 'log'; id: string; added: LogEntry[] }
   | { type: 'update'; status: UpdateStatus }
+  /** The mouse's back/forward buttons (Windows sends them to the window, not the page). */
+  | { type: 'navigate'; direction: 'back' | 'forward' }
 
 export interface MikroApi {
   platform: string
@@ -309,6 +345,7 @@ export interface MikroApi {
   disconnect(id: string): Promise<void>
   focus(id: string | null): void
   routerLog(id: string): Promise<RouterLogEntry[]>
+  firewallStatus(id: string): Promise<FirewallLogStatus>
   queryLogs(q: LogQuery): Promise<LogQueryResult>
   exportLogs(req: LogExportRequest): Promise<{ saved: boolean; path?: string }>
   logStorage(): Promise<{ bytes: number }>

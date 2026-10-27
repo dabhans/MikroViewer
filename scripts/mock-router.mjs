@@ -3,7 +3,7 @@
 // MikroViewer without a real router.
 //
 //   node scripts/mock-router.mjs                        (port 8728, user admin / password admin)
-//   node scripts/mock-router.mjs --port 18728 --name Sommerhus --devices 4 --no-health
+//   node scripts/mock-router.mjs --port 18728 --name cabin-gw --devices 4 --no-health
 //   node scripts/mock-router.mjs --ros719               (RouterOS 7.19: ports inside the addresses)
 //   node scripts/mock-router.mjs --ros6                 (RouterOS 6: as 7.19, plus the old /system/health format)
 //   node scripts/mock-router.mjs --no-follow            (a router that can't stream its log)
@@ -23,7 +23,7 @@ const opt = (name, def) => {
 const flag = (name) => args.includes(`--${name}`)
 
 const PORT = Number(opt('port', flag('tls') ? 8729 : 8728))
-const IDENTITY = opt('name', 'Hjemme-hAP')
+const IDENTITY = opt('name', 'home-gw')
 const USER = opt('user', 'admin')
 const PASSWORD = opt('password', 'admin')
 const DEVICE_COUNT = Number(opt('devices', 14))
@@ -50,14 +50,15 @@ const between = (a, b) => a + rand() * (b - a)
 
 const LAN_PREFIX = '192.168.88.'
 const ROUTER_LAN = '192.168.88.1'
-const PUBLIC_IP = '85.191.20.17'
+// Documentation addresses (RFC 5737), so no real network appears in demos and screenshots.
+const PUBLIC_IP = '203.0.113.17'
 
 const DEVICE_TEMPLATES = [
-  { host: 'Magnus-PC', mac: '3C:7C:3F:1A:22:01', ip: 23, heavy: 1.2 },
+  { host: 'Office-PC', mac: '3C:7C:3F:1A:22:01', ip: 23, heavy: 1.2 },
   { host: 'iPhone', mac: 'A4:83:E7:5B:10:9C', ip: 31, heavy: 0.6 },
   { host: 'Galaxy-S24', mac: '5C:E8:83:02:4F:AA', ip: 44, heavy: 0.5 },
   { host: 'LG-webOS-TV', mac: '58:FD:B1:7C:31:0E', ip: 52, heavy: 2.5 },
-  { host: 'Sonos-Stue', mac: '48:A6:B8:90:12:7D', ip: 61, heavy: 0.4 },
+  { host: 'Sonos-Kitchen', mac: '48:A6:B8:90:12:7D', ip: 61, heavy: 0.4 },
   { host: 'MacBook-Air', mac: 'F0:18:98:2E:4C:B3', ip: 65, heavy: 0.9 },
   { host: 'iPad', mac: '90:81:2A:6E:01:F2', ip: 70, heavy: 0.7 },
   { host: 'Google-Nest-Mini', mac: '1C:F2:9A:41:88:0B', ip: 74, heavy: 0.1 },
@@ -76,22 +77,22 @@ const REMOTES = [
   { name: 'www.youtube.com', cname: 'youtube-ui.l.google.com', ip: '142.250.74.46', port: 443, proto: 'tcp', down: [2e6, 18e6], weight: 3 },
   { name: 'rr3---sn-uxaxpu5ap5-jj0e.googlevideo.com', ip: '173.194.182.8', port: 443, proto: 'udp', down: [4e6, 25e6], weight: 3 },
   { name: 'www.netflix.com', cname: 'www.dradis.netflix.com', ip: '54.155.178.5', port: 443, proto: 'tcp', down: [1e5, 6e5], weight: 1 },
-  { name: 'ipv4-c012-cph001-ix.1.oca.nflxvideo.net', ip: '45.57.90.130', port: 443, proto: 'tcp', down: [3e6, 16e6], weight: 2 },
+  { name: 'ipv4-c012-ams001-ix.1.oca.nflxvideo.net', ip: '45.57.90.130', port: 443, proto: 'tcp', down: [3e6, 16e6], weight: 2 },
   { name: 'audio-ak-spotify-com.akamaized.net', ip: '2.21.66.59', port: 443, proto: 'tcp', down: [1.6e5, 3.2e5], weight: 2 },
   { name: 'www.facebook.com', cname: 'star-mini.c10r.facebook.com', ip: '157.240.201.35', port: 443, proto: 'tcp', down: [2e3, 4e5], weight: 2 },
   { name: 'web.whatsapp.com', ip: '157.240.201.60', port: 5222, proto: 'tcp', down: [100, 4e3], weight: 2 },
   { name: 'www.google.com', ip: '142.250.179.196', port: 443, proto: 'tcp', down: [1e3, 3e5], weight: 3 },
   { name: 'mtalk.google.com', cname: 'mobile-gtalk.l.google.com', ip: '142.250.102.188', port: 5228, proto: 'tcp', down: [50, 800], weight: 2 },
   { name: 'api.push.apple.com', ip: '17.57.146.53', port: 5223, proto: 'tcp', down: [50, 800], weight: 2 },
-  { name: 'www.dr.dk', ip: '159.20.6.38', port: 443, proto: 'tcp', down: [1e4, 2e6], weight: 2 },
-  { name: 'tv2.dk', ip: '151.101.2.217', port: 443, proto: 'tcp', down: [1e4, 1.5e6], weight: 1 },
+  { name: 'www.bbc.co.uk', ip: '151.101.0.81', port: 443, proto: 'tcp', down: [1e4, 2e6], weight: 2 },
+  { name: 'edition.cnn.com', ip: '151.101.3.5', port: 443, proto: 'tcp', down: [1e4, 1.5e6], weight: 1 },
   { name: 'login.microsoftonline.com', ip: '20.190.159.3', port: 443, proto: 'tcp', down: [1e3, 5e4], weight: 2 },
   { name: 'dl.delivery.mp.microsoft.com', ip: '23.218.218.72', port: 80, proto: 'tcp', down: [5e6, 40e6], weight: 0.4 },
   { name: 'discord.com', ip: '162.159.135.232', port: 443, proto: 'tcp', down: [1e3, 8e4], weight: 1 },
   { name: 'steamcdn-a.akamaihd.net', ip: '23.62.44.17', port: 443, proto: 'tcp', down: [1e6, 30e6], weight: 0.3 },
   { name: 'one.one.one.one', ip: '1.1.1.1', port: 443, proto: 'tcp', down: [500, 5e3], weight: 1 },
   { name: 'dns.google', ip: '8.8.8.8', port: 53, proto: 'udp', down: [200, 2e3], weight: 1 },
-  { name: 'dk.pool.ntp.org', ip: '193.104.228.10', port: 123, proto: 'udp', down: [64, 200], weight: 0.6 },
+  { name: 'pool.ntp.org', ip: '193.104.228.10', port: 123, proto: 'udp', down: [64, 200], weight: 0.6 },
   { name: 'stun.l.google.com', ip: '74.125.250.129', port: 19302, proto: 'udp', down: [3e5, 2e6], weight: 0.5 },
   { name: undefined, ip: '104.18.32.47', port: 443, proto: 'tcp', down: [1e3, 2e5], weight: 1 },
   { name: undefined, ip: '91.198.174.192', port: 443, proto: 'tcp', down: [1e3, 2e5], weight: 0.5 }
@@ -146,10 +147,10 @@ function seedConnections(now) {
   connections.set('*F00D1', {
     id: '*F00D1',
     proto: 'tcp',
-    src: '203.0.113.50:51544',
+    src: '192.0.2.50:51544',
     dst: `${PUBLIC_IP}:443`,
     replySrc: `${NAS.address}:443`,
-    replyDst: '203.0.113.50:51544',
+    replyDst: '192.0.2.50:51544',
     created: now - 600000,
     end: now + 3600000,
     down: 2e4,
@@ -388,21 +389,24 @@ function log(topics, message) {
 
 // ---------- Firewall ----------
 
-const rule = (r) => ({ log: 'false', 'log-prefix': '', disabled: 'false', ...r })
+// rate: packets per second the rule matches, for its counter.
+const rule = (r) => ({ log: 'false', 'log-prefix': '', disabled: 'false', dynamic: 'false', rate: 0, ...r })
 const RULES = {
   filter: [
+    rule({ chain: 'forward', action: 'passthrough', dynamic: 'true', comment: 'special dummy rule to show fasttrack counters', rate: 900 }),
     rule({ chain: 'input', action: 'accept', 'connection-state': 'established,related,untracked', comment: 'defconf: accept established,related,untracked' }),
     rule({ chain: 'input', action: 'drop', 'connection-state': 'invalid', comment: 'defconf: drop invalid' }),
     rule({ chain: 'input', action: 'accept', protocol: 'icmp', comment: 'defconf: accept ICMP' }),
-    rule({ chain: 'input', action: 'drop', 'in-interface-list': '!LAN', log: 'true', 'log-prefix': 'DROP-IN', comment: 'defconf: drop all not coming from LAN' }),
+    rule({ chain: 'input', action: 'drop', 'in-interface-list': '!LAN', log: 'true', 'log-prefix': 'DROP-IN', comment: 'defconf: drop all not coming from LAN', rate: 0.8 }),
     rule({ chain: 'forward', action: 'fasttrack-connection', 'connection-state': 'established,related', comment: 'defconf: fasttrack' }),
     rule({ chain: 'forward', action: 'accept', 'connection-state': 'established,related,untracked', comment: 'defconf: accept established,related, untracked' }),
-    rule({ chain: 'forward', action: 'drop', 'connection-state': 'invalid', log: 'true', 'log-prefix': 'INVALID', comment: 'defconf: drop invalid' }),
-    rule({ chain: 'forward', action: 'reject', protocol: 'tcp', 'dst-port': '25', log: 'true', 'log-prefix': 'BLOCK-SMTP', comment: 'Block outgoing mail' }),
+    rule({ chain: 'forward', action: 'drop', 'connection-state': 'invalid', log: 'true', 'log-prefix': 'INVALID', comment: 'defconf: drop invalid', rate: 0.05 }),
+    rule({ chain: 'forward', action: 'reject', protocol: 'tcp', 'dst-port': '25', log: 'true', 'log-prefix': 'BLOCK-SMTP', comment: 'Block outgoing mail', rate: 0.01 }),
+    rule({ chain: 'forward', action: 'drop', 'src-address': '192.168.89.0/24', 'dst-address': '192.168.88.0/24', comment: 'Guest Wi-Fi: no access to the home network', rate: 0.02 }),
     rule({ chain: 'forward', action: 'accept', protocol: 'tcp', 'dst-address': NAS.address, 'dst-port': '443', log: 'true', 'log-prefix': 'NAS-WEB', comment: 'Allow NAS web access' }),
-    rule({ chain: 'forward', action: 'drop', 'connection-nat-state': '!dstnat', 'in-interface-list': 'WAN', log: 'true', 'log-prefix': 'DROP-FWD', comment: 'defconf: drop all from WAN not DSTNATed' })
+    rule({ chain: 'forward', action: 'drop', 'connection-nat-state': '!dstnat', 'in-interface-list': 'WAN', log: 'true', 'log-prefix': 'DROP-FWD', comment: 'defconf: drop all from WAN not DSTNATed', rate: 0.1 })
   ],
-  raw: [rule({ chain: 'prerouting', action: 'drop', 'src-address-list': 'blocklist', log: 'true', 'log-prefix': 'BLOCKLIST', comment: 'Drop known bad hosts' })],
+  raw: [rule({ chain: 'prerouting', action: 'drop', 'src-address-list': 'blocklist', log: 'true', 'log-prefix': 'BLOCKLIST', comment: 'Drop known bad hosts', rate: 0.2 })],
   nat: [
     rule({ chain: 'srcnat', action: 'masquerade', 'out-interface-list': 'WAN', comment: 'defconf: masquerade' }),
     rule({ chain: 'dstnat', action: 'dst-nat', protocol: 'tcp', 'dst-port': '443', 'in-interface': 'ether1', 'to-addresses': NAS.address, 'to-ports': '443', comment: 'NAS' })
@@ -435,7 +439,7 @@ const FIREWALL_EVENTS = [
     return `DROP-IN input: in:ether1 out:(unknown 0), connection-state:new src-mac ${ISP_MAC}, proto ${proto}${proto === 'TCP' ? ' (SYN)' : ''}, ${randIp()}:${randPort()}->${PUBLIC_IP}:${port}, len ${proto === 'TCP' ? 44 : 60}`
   }],
   [1.5, () => `DROP-IN input: in:ether1 out:(unknown 0), connection-state:new src-mac ${ISP_MAC}, proto ICMP (type 8, code 0), ${randIp()}->${PUBLIC_IP}, len 84`],
-  [2, () => `BLOCKLIST prerouting: in:ether1 out:(unknown 0), src-mac ${ISP_MAC}, proto TCP (SYN), 45.148.10.${Math.floor(between(2, 250))}:${randPort()}->${PUBLIC_IP}:443, len 60`],
+  [2, () => `BLOCKLIST prerouting: in:ether1 out:(unknown 0), src-mac ${ISP_MAC}, proto TCP (SYN), 198.51.100.${Math.floor(between(2, 250))}:${randPort()}->${PUBLIC_IP}:443, len 60`],
   [1.5, () => {
     const src = `${randIp()}:${randPort()}`
     return `NAS-WEB forward: in:ether1 out:bridge, connection-state:new,dnat src-mac ${ISP_MAC}, proto TCP (SYN), ${src}->${NAS.address}:443, NAT ${src}->(${PUBLIC_IP}:443->${NAS.address}:443), len 60`
@@ -464,10 +468,10 @@ function seedLog() {
   log('dhcp,info', 'dhcp-client on ether1 got IP address ' + PUBLIC_IP)
   log('wireguard,info', 'wireguard1: peer handshake completed')
   for (const d of devices) log('dhcp,info', `defconf assigned ${d.address} for ${d.mac} ${d.host ?? ''}`.trim())
-  log('system,error,critical', 'login failure for user admin from 45.148.10.12 via ssh')
+  log('system,error,critical', 'login failure for user admin from 198.51.100.12 via ssh')
   log('wireless,info', '90:81:2A:6E:01:F2@wifi1: connected, signal strength -58')
-  log('system,warning', 'NTP server dk.pool.ntp.org not reachable, trying next')
-  log('firewall,info', `DROP-IN input: in:ether1 out:(unknown 0), connection-state:new src-mac ${ISP_MAC}, proto TCP (SYN), 45.148.10.12:58122->${PUBLIC_IP}:22, len 60`)
+  log('system,warning', 'NTP server pool.ntp.org not reachable, trying next')
+  log('firewall,info', `DROP-IN input: in:ether1 out:(unknown 0), connection-state:new src-mac ${ISP_MAC}, proto TCP (SYN), 198.51.100.12:58122->${PUBLIC_IP}:22, len 60`)
 }
 const LOG_EVENTS = [
   () => {
@@ -644,10 +648,10 @@ function handleClient(socket) {
       case '/ip/address/print':
         return print([
           { '.id': '*1', address: `${ROUTER_LAN}/24`, network: '192.168.88.0', interface: 'bridge' },
-          { '.id': '*2', address: `${PUBLIC_IP}/24`, network: '85.191.20.0', interface: 'ether1', dynamic: 'true' }
+          { '.id': '*2', address: `${PUBLIC_IP}/24`, network: '203.0.113.0', interface: 'ether1', dynamic: 'true' }
         ])
       case '/ip/route/print':
-        return print([{ '.id': '*1', 'dst-address': '0.0.0.0/0', gateway: '85.191.20.1', 'immediate-gateway': '85.191.20.1%ether1', active: 'true' }])
+        return print([{ '.id': '*1', 'dst-address': '0.0.0.0/0', gateway: '203.0.113.1', 'immediate-gateway': '203.0.113.1%ether1', active: 'true' }])
       case '/ip/dns/cache/all/print':
       case '/ip/dns/cache/print':
         return print(dnsRecords())
@@ -668,7 +672,15 @@ function handleClient(socket) {
       case '/ip/firewall/nat/print':
       case '/ip/firewall/mangle/print': {
         const table = cmd.split('/')[3]
-        return print(RULES[table].map((r, i) => ({ '.id': `*${(i + 1).toString(16).toUpperCase()}`, ...r })))
+        const up = (now - startedAt) / 1000
+        return print(
+          RULES[table].map(({ rate, ...r }, i) => ({
+            '.id': `*${(i + 1).toString(16).toUpperCase()}`,
+            ...r,
+            packets: String(Math.floor(up * (rate + (r['log'] === 'true' ? 0.01 : 0)))),
+            bytes: String(Math.floor(up * rate * 400))
+          }))
+        )
       }
       default:
         return trap(tag, 'no such command prefix')

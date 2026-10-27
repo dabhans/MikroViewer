@@ -1,8 +1,8 @@
 // Stores the log of one router: recent records in memory, everything in hourly files on disk
 // (logs/<router id>/2026-10-26T14.jsonl, one JSON record per line, UTC hours).
 //
-// A session is written when it opens; when it closes an update line ({"u": id, ...}) is appended
-// to the same file, so every hour file is complete on its own.
+// Records are only ever appended: a session is written when it ends, like the traffic log of a
+// firewall, and a firewall record when the router logs the packet.
 
 import fs from 'node:fs'
 import fsp from 'node:fs/promises'
@@ -16,22 +16,17 @@ const FLUSH_MS = 1000
 const HOUR = 3600_000
 const FILE_RE = /^(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl$/
 
-export type NewLogEntry = Omit<LogEntry, 'id' | 'active'>
+export type NewLogEntry = Omit<LogEntry, 'id'>
 
 /** What a router session writes to. */
 export interface LogSink {
-  add(entry: NewLogEntry, open?: boolean): number
-  update(id: number, patch: Partial<LogEntry>): void
-  /** The session's end is unknown (MikroViewer disconnected). */
-  abandon(id: number): void
-  /** An abandoned session is still there after reconnecting. */
-  resume(id: number): void
+  add(entry: NewLogEntry): number
 }
 
 // ---------- File format ----------
 
-// Short keys keep the files about a third smaller.
-const KEYS: [keyof LogEntry, string][] = [
+// Short keys keep the files about a third smaller. "end" is only in files from before 0.3.
+const KEYS: [string, string][] = [
   ['id', 'i'],
   ['t', 't'],
   ['type', 'k'],
@@ -44,6 +39,9 @@ const KEYS: [keyof LogEntry, string][] = [
   ['dst', 'd'],
   ['dstPort', 'dp'],
   ['dstName', 'dn'],
+  ['start', 'st'],
+  ['startBefore', 'sb'],
+  ['endReason', 'er'],
   ['end', 'e'],
   ['durationSec', 'du'],
   ['approx', 'ax'],
@@ -64,30 +62,41 @@ const KEYS: [keyof LogEntry, string][] = [
 const SHORT = new Map(KEYS)
 const LONG = new Map(KEYS.map(([l, s]) => [s, l]))
 
-function encode(e: Partial<LogEntry>, update?: number): string {
-  const o: Record<string, unknown> = update !== undefined ? { u: update } : {}
+function encode(e: LogEntry): string {
+  const o: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(e)) {
-    if (v === undefined || k === 'active' || (update !== undefined && k === 'id')) continue
+    if (v === undefined) continue
     if (k === 'nat') {
       const n = v as LogEntry['nat']
       o.nk = n!.kind
       o.na = n!.address
     } else {
-      const s = SHORT.get(k as keyof LogEntry)
+      const s = SHORT.get(k)
       if (s) o[s] = v
     }
   }
   return JSON.stringify(o) + '\n'
 }
 
-function decode(o: Record<string, unknown>): Partial<LogEntry> {
+function decode(o: Record<string, unknown>): Record<string, unknown> {
   const e: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(o)) {
     const l = LONG.get(k)
     if (l) e[l] = v
   }
   if (typeof o.nk === 'string') e.nat = { kind: o.nk, address: String(o.na ?? '') }
-  return e as Partial<LogEntry>
+  return e
+}
+
+/**
+ * Before 0.3 a session was written when it opened (t = start) and completed by an update line
+ * when it closed. Those become records of the end, like new ones; sessions that never closed are left out.
+ */
+function fromLegacy(e: Record<string, unknown>): LogEntry | null {
+  if (e.type !== 'session' || e.start !== undefined) return e as unknown as LogEntry
+  if (typeof e.end !== 'number') return null
+  const { end, ...rest } = e
+  return { ...rest, start: e.t, t: end, ...(e.approx ? { startBefore: true } : {}) } as unknown as LogEntry
 }
 
 function hourKey(t: number): string {
@@ -140,20 +149,16 @@ export class LogStore implements LogSink {
   private recent: LogEntry[] = []
   /** Everything from this time on is in `recent`. */
   private memoryFrom = Date.now()
-  /** Sessions that haven't closed yet (open or abandoned) – they still get an update. */
-  private sessions = new Map<number, LogEntry>()
-  private active = new Set<number>()
   private lastId = 0
 
   private pendingLines = new Map<string, string[]>()
   private pendingAdded: LogEntry[] = []
-  private pendingUpdated = new Map<number, LogEntry>()
   private flushTimer?: NodeJS.Timeout
   private writing: Promise<void> = Promise.resolve()
 
   constructor(
     readonly dir: string,
-    private readonly onChange: (added: LogEntry[], updated: LogEntry[]) => void
+    private readonly onChange: (added: LogEntry[]) => void
   ) {}
 
   private nextId(): number {
@@ -162,46 +167,14 @@ export class LogStore implements LogSink {
     return this.lastId
   }
 
-  add(entry: NewLogEntry, open = false): number {
+  add(entry: NewLogEntry): number {
     const e = { ...entry, id: this.nextId() } as LogEntry
     this.recent.push(e)
     if (this.recent.length > MEMORY_MAX * 1.1) this.trimMemory()
-    if (e.type === 'session' && e.end === undefined) {
-      this.sessions.set(e.id, e)
-      if (open) this.active.add(e.id)
-    }
     this.queue(hourKey(e.t), encode(e))
     this.pendingAdded.push(e)
     this.scheduleFlush()
     return e.id
-  }
-
-  update(id: number, patch: Partial<LogEntry>): void {
-    const e = this.sessions.get(id)
-    if (!e) return
-    Object.assign(e, patch)
-    this.sessions.delete(id)
-    this.active.delete(id)
-    this.queue(hourKey(e.t), encode(patch, id))
-    if (!this.pendingAdded.includes(e)) this.pendingUpdated.set(id, e)
-    this.scheduleFlush()
-  }
-
-  abandon(id: number): void {
-    if (this.active.delete(id)) this.changed(id)
-  }
-
-  resume(id: number): void {
-    if (this.sessions.has(id) && !this.active.has(id)) {
-      this.active.add(id)
-      this.changed(id)
-    }
-  }
-
-  private changed(id: number): void {
-    const e = this.sessions.get(id)
-    if (e && !this.pendingAdded.includes(e)) this.pendingUpdated.set(id, e)
-    this.scheduleFlush()
   }
 
   private trimMemory(): void {
@@ -220,16 +193,12 @@ export class LogStore implements LogSink {
     if (!this.flushTimer) this.flushTimer = setTimeout(() => void this.flush(), FLUSH_MS)
   }
 
-  private withActive = (e: LogEntry): LogEntry => ({ ...e, active: this.active.has(e.id) })
-
   private takePending(): Map<string, string[]> {
     clearTimeout(this.flushTimer)
     this.flushTimer = undefined
     const added = this.pendingAdded
-    const updated = [...this.pendingUpdated.values()]
     this.pendingAdded = []
-    this.pendingUpdated.clear()
-    if (added.length || updated.length) this.onChange(added.map(this.withActive), updated.map(this.withActive))
+    if (added.length) this.onChange(added)
     const lines = this.pendingLines
     this.pendingLines = new Map()
     return lines
@@ -281,7 +250,7 @@ export class LogStore implements LogSink {
     } catch {
       return []
     }
-    const byId = new Map<number, LogEntry>()
+    const byId = new Map<number, Record<string, unknown>>()
     for (const line of text.split('\n')) {
       if (!line) continue
       let o: Record<string, unknown>
@@ -291,14 +260,20 @@ export class LogStore implements LogSink {
         continue // a half-written last line
       }
       if (typeof o.u === 'number') {
+        // An update line (files from before 0.3).
         const e = byId.get(o.u)
         if (e) Object.assign(e, decode(o))
       } else {
-        const e = decode(o) as LogEntry
+        const e = decode(o)
         if (typeof e.id === 'number') byId.set(e.id, e)
       }
     }
-    return [...byId.values()]
+    const out: LogEntry[] = []
+    for (const e of byId.values()) {
+      const entry = fromLegacy(e)
+      if (entry) out.push(entry)
+    }
+    return out
   }
 
   /**
@@ -310,7 +285,7 @@ export class LogStore implements LogSink {
     const sort = (a: LogEntry, b: LogEntry): number => (order === 'desc' ? b.t - a.t || b.id - a.id : a.t - b.t || a.id - b.id)
 
     if (from >= this.memoryFrom) {
-      await each(this.recent.filter(keep).map(this.withActive).sort(sort))
+      await each(this.recent.filter(keep).sort(sort))
       return
     }
     await this.flush()
@@ -318,7 +293,6 @@ export class LogStore implements LogSink {
     if (order === 'desc') files.reverse()
     for (const f of files) {
       const batch = (await this.readFile(f.name)).filter(keep)
-      for (const e of batch) e.active = this.active.has(e.id)
       await each(batch.sort(sort))
     }
   }
@@ -356,8 +330,6 @@ export class LogStore implements LogSink {
     this.takePending()
     this.pendingLines.clear()
     this.recent = []
-    this.sessions.clear()
-    this.active.clear()
     this.memoryFrom = Date.now()
     await this.writing
     await fsp.rm(this.dir, { recursive: true, force: true })

@@ -15,6 +15,7 @@ const api: MikroApi = {
   disconnect: (id) => ipcRenderer.invoke('session:disconnect', id),
   focus: (id) => ipcRenderer.send('session:focus', id),
   routerLog: (id) => ipcRenderer.invoke('session:routerLog', id),
+  firewallStatus: (id) => ipcRenderer.invoke('session:firewallStatus', id),
   queryLogs: (q) => ipcRenderer.invoke('logs:query', q),
   exportLogs: (req) => ipcRenderer.invoke('logs:export', req),
   logStorage: () => ipcRenderer.invoke('logs:storage'),

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useReducer, useState } from 'react'
+import { useCallback, useEffect, useReducer, useRef, useState } from 'react'
 import type { ProfileInput, RouterProfile, RouterSummary, SessionStatus, Settings, UpdateStatus } from '../../shared/types'
 import { displayName, initialState, reducer } from './store'
 import { TABS, isTab, type Tab } from './tabs'
@@ -7,7 +7,7 @@ import { ContextMenu, Modal, Panel, type MenuState } from './components/Controls
 import { RouterForm, cleanError } from './components/RouterForm'
 import { AboutDialog, SettingsDialog } from './components/SettingsDialog'
 import { OverviewView } from './views/Overview'
-import { ConnectionsView } from './views/Connections'
+import { ConnectionsView, type ConnectionsMode } from './views/Connections'
 import { LogsView } from './views/Logs'
 import { DhcpView } from './views/Dhcp'
 import { InterfacesView } from './views/Interfaces'
@@ -34,13 +34,25 @@ export const STATE_LABEL: Record<SessionStatus['state'], string> = {
 /** Pages that work from stored data, without a connection. */
 const OFFLINE_TABS: Tab[] = ['logs']
 
+/** Where the user is – what the mouse's back button returns to. */
+interface Nav {
+  tab: Tab
+  /** The search on the Connections page. */
+  search: string
+  mode: ConnectionsMode
+}
+const HISTORY_MAX = 50
+
 export function App() {
   const [state, dispatch] = useReducer(reducer, initialState)
-  const [tab, setTabState] = useState<Tab>(() => {
+  const [nav, setNav] = useState<Nav>(() => {
     const saved = storageGet('mv.tab')
-    return isTab(saved) ? saved : 'overview'
+    return { tab: isTab(saved) ? saved : 'overview', search: '', mode: 'list' }
   })
-  const [connSearch, setConnSearch] = useState('')
+  const navRef = useRef(nav)
+  navRef.current = nav
+  const history = useRef<{ back: Nav[]; forward: Nav[] }>({ back: [], forward: [] })
+  const { tab } = nav
   const [editing, setEditing] = useState<RouterProfile | 'new' | null>(null)
   const [settings, setSettings] = useState<Settings>({ theme: window.api.initialTheme, logRetentionDays: 7 })
   const [dialog, setDialog] = useState<'settings' | 'about' | null>(null)
@@ -72,14 +84,73 @@ export function App() {
     if (state.selectedId) storageSet('mv.selected', state.selectedId)
   }, [state.selectedId, state.loaded])
 
-  const setTab = useCallback((t: Tab, search?: string) => {
-    setTabState(t)
-    storageSet('mv.tab', t)
-    if (search !== undefined) setConnSearch(search)
+  const show = useCallback((next: Nav) => {
+    setNav(next)
+    storageSet('mv.tab', next.tab)
   }, [])
 
+  /** Goes somewhere else; Back (mouse button, Alt+Left) returns. */
+  const navigate = useCallback(
+    (patch: Partial<Nav>) => {
+      const cur = navRef.current
+      const next = { ...cur, ...patch }
+      if (next.tab === cur.tab && next.search === cur.search && next.mode === cur.mode) return
+      const h = history.current
+      h.back.push(cur)
+      if (h.back.length > HISTORY_MAX) h.back.shift()
+      h.forward = []
+      show(next)
+    },
+    [show]
+  )
+
+  const step = useCallback(
+    (dir: 'back' | 'forward') => {
+      const h = history.current
+      const next = (dir === 'back' ? h.back : h.forward).pop()
+      if (!next) return
+      ;(dir === 'back' ? h.forward : h.back).push(navRef.current)
+      show(next)
+    },
+    [show]
+  )
+
+  // The mouse's back and forward buttons reach the page as buttons 3 and 4 and, on Windows, the
+  // window as an app command – one press can arrive both ways.
+  useEffect(() => {
+    let last = 0
+    const go = (dir: 'back' | 'forward'): void => {
+      const now = performance.now()
+      if (now - last < 250) return
+      last = now
+      step(dir)
+    }
+    const onMouse = (e: MouseEvent): void => {
+      if (e.button !== 3 && e.button !== 4) return
+      e.preventDefault()
+      go(e.button === 3 ? 'back' : 'forward')
+    }
+    const onKey = (e: KeyboardEvent): void => {
+      if (!e.altKey || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return
+      e.preventDefault()
+      go(e.key === 'ArrowLeft' ? 'back' : 'forward')
+    }
+    const off = window.api.onEvent((ev) => {
+      if (ev.type === 'navigate') go(ev.direction)
+    })
+    window.addEventListener('mouseup', onMouse)
+    window.addEventListener('keydown', onKey)
+    return () => {
+      off()
+      window.removeEventListener('mouseup', onMouse)
+      window.removeEventListener('keydown', onKey)
+    }
+  }, [step])
+
+  const setTab = useCallback((t: Tab, search?: string) => navigate(search !== undefined ? { tab: t, search, mode: 'list' } : { tab: t }), [navigate])
+
   const select = (id: string): void => {
-    if (id !== state.selectedId) setConnSearch('')
+    if (id !== state.selectedId) setNav((n) => ({ ...n, search: '' }))
     dispatch({ type: 'select', id })
   }
 
@@ -193,12 +264,21 @@ export function App() {
             </Panel>
           </div>
         ) : tab === 'logs' ? (
-          <LogsView key={profile.id} routerId={profile.id} />
+          <LogsView key={profile.id} routerId={profile.id} connected={status.state === 'connected'} />
         ) : live ? (
           <>
             {status.state === 'reconnecting' && <ReconnectNotice status={status} profileId={profile.id} />}
             {tab === 'overview' && <OverviewView data={state.data} profile={profile} status={status} onNavigate={setTab} onEdit={() => setEditing(profile)} />}
-            {tab === 'connections' && <ConnectionsView data={state.data} search={connSearch} onSearch={setConnSearch} />}
+            {tab === 'connections' && (
+              <ConnectionsView
+                data={state.data}
+                search={nav.search}
+                onSearch={(search) => setNav((n) => ({ ...n, search }))}
+                mode={nav.mode}
+                onMode={(mode) => navigate({ mode })}
+                onShowSource={(ip) => navigate({ mode: 'list', search: ip })}
+              />
+            )}
             {tab === 'dhcp' && <DhcpView data={state.data} onShowConnections={showConnections} />}
             {tab === 'interfaces' && <InterfacesView data={state.data} />}
             {tab === 'log' && <RouterLogView routerId={profile.id} />}

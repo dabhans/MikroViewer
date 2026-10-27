@@ -1,17 +1,19 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { ContextMenu, type MenuItem, type MenuState } from './Controls'
 
 export interface Column<T> {
   key: string
   header: string
-  /** Minimum width in px. */
+  /** Minimum width in px. Wider windows widen every column by the same factor. */
   width: number
-  /** Share of extra space (fr). Omit for fixed columns. */
+  /** Takes this many times its share of extra space (default 1). */
   grow?: number
   render: (row: T) => ReactNode
   sort?: (row: T) => number | string
   /** First click sorts descending (handy for numbers such as traffic). */
   sortDesc?: boolean
-  align?: 'right'
+  /** The values "Copy" offers for a cell, first one used for "Copy row". Default: the cell's text. */
+  copy?: (row: T) => (string | number | undefined)[]
   title?: string
 }
 
@@ -29,6 +31,7 @@ interface Props<T> {
   empty?: string
   onRowClick?: (row: T) => void
   selectedKey?: string | null
+  /** Replaces the default right-click menu (Copy). */
   onCellContextMenu?: (row: T, columnKey: string, e: React.MouseEvent) => void
   /** Called when the view reaches or leaves the top row. */
   onTopChange?: (atTop: boolean) => void
@@ -36,11 +39,31 @@ interface Props<T> {
 
 const OVERSCAN = 10
 
+function cellValues<T>(c: Column<T>, row: T, el: HTMLElement | null): string[] {
+  const raw = c.copy ? c.copy(row) : [el?.innerText]
+  return [...new Set(raw.filter((v) => v !== undefined && v !== '').map((v) => String(v).trim()))].filter(Boolean)
+}
+
+/** "Copy" menu items for a cell, and "Copy row" (tab separated, pastes into a spreadsheet). */
+export function copyItems<T>(columns: Column<T>[], row: T, columnKey: string, cellEl: HTMLElement): MenuItem[] {
+  const rowEl = cellEl.parentElement
+  const col = columns.find((c) => c.key === columnKey)
+  const items: MenuItem[] = (col ? cellValues(col, row, cellEl) : []).map((v) => ({
+    label: `Copy "${v.length > 48 ? v.slice(0, 47) + '…' : v}"`,
+    onClick: () => void navigator.clipboard.writeText(v)
+  }))
+  const line = columns.map((c, i) => cellValues(c, row, (rowEl?.children[i] as HTMLElement) ?? null)[0] ?? '').join('\t')
+  if (items.length) items.push('separator')
+  items.push({ label: 'Copy row', onClick: () => void navigator.clipboard.writeText(line) })
+  return items
+}
+
 /** Virtualised grid – only visible rows are rendered, so thousands of connections are fine. */
 export function DataTable<T>({ rows, columns, rowKey, rowHeight = 25, initialSort, empty, onRowClick, selectedKey, onCellContextMenu, onTopChange }: Props<T>) {
   const [sort, setSort] = useState<SortState | undefined>(initialSort)
   const scrollRef = useRef<HTMLDivElement>(null)
   const [viewport, setViewport] = useState({ top: 0, height: 800 })
+  const [menu, setMenu] = useState<MenuState | null>(null)
   const atTop = viewport.top < rowHeight
 
   useLayoutEffect(() => {
@@ -65,7 +88,8 @@ export function DataTable<T>({ rows, columns, rowKey, rowHeight = 25, initialSor
     // sortFn changes identity on every render; the key and the rows are what matter.
   }, [rows, sort?.key, sort?.dir])
 
-  const template = columns.map((c) => (c.grow ? `minmax(${c.width}px, ${c.grow}fr)` : `${c.width}px`)).join(' ')
+  // Every column grows in proportion to its width, so extra space is shared out evenly.
+  const template = columns.map((c) => `minmax(${c.width}px, ${c.width * (c.grow ?? 1)}fr)`).join(' ')
   const minWidth = columns.reduce((s, c) => s + c.width, 0)
 
   const start = Math.max(0, Math.floor(viewport.top / rowHeight) - OVERSCAN)
@@ -79,6 +103,12 @@ export function DataTable<T>({ rows, columns, rowKey, rowHeight = 25, initialSor
     )
   }
 
+  const onContextMenu = (row: T, key: string, e: React.MouseEvent<HTMLDivElement>): void => {
+    if (onCellContextMenu) return onCellContextMenu(row, key, e)
+    e.preventDefault()
+    setMenu({ x: e.clientX, y: e.clientY, items: copyItems(columns, row, key, e.currentTarget) })
+  }
+
   return (
     <div className="table">
       <div
@@ -90,7 +120,7 @@ export function DataTable<T>({ rows, columns, rowKey, rowHeight = 25, initialSor
           {columns.map((c) => (
             <button
               key={c.key}
-              className={`th${c.sort ? ' sortable' : ''}${c.align === 'right' ? ' right' : ''}`}
+              className={`th${c.sort ? ' sortable' : ''}`}
               onClick={() => onHeader(c)}
               title={c.title}
               tabIndex={c.sort ? 0 : -1}
@@ -116,11 +146,7 @@ export function DataTable<T>({ rows, columns, rowKey, rowHeight = 25, initialSor
                   onClick={onRowClick ? () => onRowClick(row) : undefined}
                 >
                   {columns.map((c) => (
-                    <div
-                      key={c.key}
-                      className={`td${c.align === 'right' ? ' right' : ''}`}
-                      onContextMenu={onCellContextMenu ? (e) => onCellContextMenu(row, c.key, e) : undefined}
-                    >
+                    <div key={c.key} className="td" onContextMenu={(e) => onContextMenu(row, c.key, e)}>
                       {c.render(row)}
                     </div>
                   ))}
@@ -130,6 +156,7 @@ export function DataTable<T>({ rows, columns, rowKey, rowHeight = 25, initialSor
           </div>
         )}
       </div>
+      {menu && <ContextMenu menu={menu} onClose={() => setMenu(null)} />}
     </div>
   )
 }

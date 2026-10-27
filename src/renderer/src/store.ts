@@ -82,6 +82,7 @@ function applyEvent(state: State, e: SessionEvent): State {
     // Handled by the views that use them.
     case 'log':
     case 'update':
+    case 'navigate':
       return state
   }
   if (e.id !== state.data.id) return state

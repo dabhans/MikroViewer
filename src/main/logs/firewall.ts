@@ -2,9 +2,9 @@
 // rule wrote them so the record gets an action (accept/drop/…) and a rule name.
 //
 // Examples of what RouterOS writes:
-//   DROP-IN input: in:ether1 out:(unknown 0), connection-state:new src-mac 00:0c:42:aa:bb:cc, proto TCP (SYN), 45.148.10.12:58122->85.191.20.17:22, len 60
-//   forward: in:bridge out:ether1, connection-state:new,snat src-mac 3c:7c:3f:1a:22:01, proto TCP (SYN), 192.168.88.23:51234->1.2.3.4:443, NAT (192.168.88.23:51234->85.191.20.17:40001)->1.2.3.4:443, len 60
-//   input: in:ether1 out:(unknown 0), proto ICMP (type 8, code 0), 1.2.3.4->85.191.20.17, len 84
+//   DROP-IN input: in:ether1 out:(unknown 0), connection-state:new src-mac 00:0c:42:aa:bb:cc, proto TCP (SYN), 198.51.100.12:58122->203.0.113.17:22, len 60
+//   forward: in:bridge out:ether1, connection-state:new,snat src-mac 3c:7c:3f:1a:22:01, proto TCP (SYN), 192.168.88.23:51234->1.2.3.4:443, NAT (192.168.88.23:51234->203.0.113.17:40001)->1.2.3.4:443, len 60
+//   input: in:ether1 out:(unknown 0), proto ICMP (type 8, code 0), 1.2.3.4->203.0.113.17, len 84
 
 import type { LogAction, NatInfo } from '../../shared/types'
 
@@ -95,14 +95,59 @@ export type RuleTable = 'filter' | 'raw' | 'nat' | 'mangle'
 
 export interface FirewallRule {
   table: RuleTable
+  /** RouterOS internal id, e.g. "*1A". */
+  id: string
   /** Position in the table, as RouterOS numbers them. */
   index: number
   chain: string
   action: string
   prefix: string
   comment?: string
+  /** What the rule matches, for rules without a comment. */
+  match: string
   log: boolean
   disabled: boolean
+  dynamic: boolean
+  packets?: number
+}
+
+/** The properties `describeMatch` reads, for the API's .proplist. */
+export const MATCH_PROPS = [
+  'protocol',
+  'src-address',
+  'src-address-list',
+  'src-port',
+  'dst-address',
+  'dst-address-list',
+  'dst-port',
+  'in-interface',
+  'in-interface-list',
+  'out-interface',
+  'out-interface-list',
+  'connection-state',
+  'connection-nat-state'
+]
+
+const MATCH_LABELS: Record<string, string> = {
+  protocol: 'proto',
+  'src-address': 'src',
+  'src-address-list': 'src list',
+  'src-port': 'src port',
+  'dst-address': 'dst',
+  'dst-address-list': 'dst list',
+  'dst-port': 'dst port',
+  'in-interface': 'in',
+  'in-interface-list': 'in list',
+  'out-interface': 'out',
+  'out-interface-list': 'out list',
+  'connection-state': 'state',
+  'connection-nat-state': 'nat state'
+}
+
+/** "proto tcp, dst port 22, in list !LAN" – or "all traffic" for a rule without matchers. */
+export function describeMatch(r: Record<string, string | undefined>): string {
+  const parts = MATCH_PROPS.filter((k) => r[k]).map((k) => `${MATCH_LABELS[k]} ${r[k]}`)
+  return parts.length ? parts.join(', ') : 'all traffic'
 }
 
 export interface RuleMatch {

@@ -25,11 +25,11 @@ const columns: Column<InterfaceRow>[] = [
     },
     sort: (i) => (i.disabled ? 2 : i.running ? 0 : 1)
   },
-  { key: 'rx', header: 'Rx Rate', width: 90, align: 'right', render: (i) => <span className="num">{formatBps(i.rxBps)}</span>, sort: (i) => i.rxBps, sortDesc: true },
-  { key: 'tx', header: 'Tx Rate', width: 90, align: 'right', render: (i) => <span className="num">{formatBps(i.txBps)}</span>, sort: (i) => i.txBps, sortDesc: true },
+  { key: 'rx', header: 'Rx Rate', width: 90, render: (i) => <span className="num">{formatBps(i.rxBps)}</span>, sort: (i) => i.rxBps, sortDesc: true },
+  { key: 'tx', header: 'Tx Rate', width: 90, render: (i) => <span className="num">{formatBps(i.txBps)}</span>, sort: (i) => i.txBps, sortDesc: true },
   { key: 'graph', header: 'Last 3 min', width: 150, render: (i) => <div style={{ width: '100%' }}><MiniTraffic points={i.history} /></div> },
-  { key: 'rxBytes', header: 'Rx Total', width: 84, align: 'right', render: (i) => <span className="num">{formatBytes(i.rxBytes)}</span>, sort: (i) => i.rxBytes, sortDesc: true },
-  { key: 'txBytes', header: 'Tx Total', width: 84, align: 'right', render: (i) => <span className="num">{formatBytes(i.txBytes)}</span>, sort: (i) => i.txBytes, sortDesc: true },
+  { key: 'rxBytes', header: 'Rx Total', width: 84, render: (i) => <span className="num">{formatBytes(i.rxBytes)}</span>, sort: (i) => i.rxBytes, sortDesc: true },
+  { key: 'txBytes', header: 'Tx Total', width: 84, render: (i) => <span className="num">{formatBytes(i.txBytes)}</span>, sort: (i) => i.txBytes, sortDesc: true },
   { key: 'mac', header: 'MAC Address', width: 130, render: (i) => <span className="selectable">{i.mac ?? ''}</span>, sort: (i) => i.mac ?? '' },
   { key: 'comment', header: 'Comment', width: 120, grow: 1, render: (i) => i.comment ?? '', sort: (i) => i.comment ?? '' }
 ]

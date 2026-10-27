@@ -44,27 +44,29 @@ export const protocolColumn = <T extends { protocol: string }>(): Column<T> => (
 })
 
 export const portColumns = <T extends { protocol: string; dstPort?: number }>(): Column<T>[] => [
-  { key: 'dstPort', header: 'Dst Port', width: 72, align: 'right', render: (r) => <span className="num">{r.dstPort ?? ''}</span>, sort: (r) => r.dstPort ?? -1 },
+  { key: 'dstPort', header: 'Dst Port', width: 72, render: (r) => <span className="num">{r.dstPort ?? ''}</span>, sort: (r) => r.dstPort ?? -1 },
   { key: 'service', header: 'Service', width: 90, render: (r) => serviceName(r.protocol, r.dstPort) ?? '', sort: (r) => serviceName(r.protocol, r.dstPort) ?? '~' }
 ]
+
+const withPort = (ip: string, port?: number): string | undefined => (port !== undefined ? `${ip}:${port}` : undefined)
 
 const listColumns: Column<ConnectionRow>[] = [
   protocolColumn(),
   {
     key: 'src',
     header: 'Source',
-    width: 200,
-    grow: 1.2,
+    width: 190,
     render: (r) => <SourceCell name={r.srcName} ip={r.srcAddress} nat={r.nat} />,
-    sort: (r) => r.srcName?.toLowerCase() ?? ipSortKey(r.srcAddress)
+    sort: (r) => r.srcName?.toLowerCase() ?? ipSortKey(r.srcAddress),
+    copy: (r) => [r.srcAddress, r.srcName, withPort(r.srcAddress, r.srcPort)]
   },
   {
     key: 'dst',
     header: 'Destination',
-    width: 220,
-    grow: 1.6,
+    width: 210,
     render: (r) => <DestinationCell name={r.dstName} ip={r.dstAddress} nat={r.nat} />,
-    sort: (r) => r.dstName?.toLowerCase() ?? ipSortKey(r.dstAddress)
+    sort: (r) => r.dstName?.toLowerCase() ?? ipSortKey(r.dstAddress),
+    copy: (r) => [r.dstAddress, r.dstName, withPort(r.dstAddress, r.dstPort), r.nat?.kind === 'dstnat' ? r.nat.address : undefined]
   },
   ...portColumns<ConnectionRow>(),
   { key: 'state', header: 'State', width: 96, render: (r) => tcpStateLabel(r.tcpState) ?? '', sort: (r) => r.tcpState ?? '' },
@@ -73,7 +75,6 @@ const listColumns: Column<ConnectionRow>[] = [
     header: 'Down',
     title: 'Current rate from destination to source',
     width: 88,
-    align: 'right',
     render: (r) => <span className="num">{formatBps(r.rxBps)}</span>,
     sort: (r) => r.rxBps,
     sortDesc: true
@@ -83,7 +84,6 @@ const listColumns: Column<ConnectionRow>[] = [
     header: 'Up',
     title: 'Current rate from source to destination',
     width: 88,
-    align: 'right',
     render: (r) => <span className="num">{formatBps(r.txBps)}</span>,
     sort: (r) => r.txBps,
     sortDesc: true
@@ -92,7 +92,6 @@ const listColumns: Column<ConnectionRow>[] = [
     key: 'bytes',
     header: 'Bytes',
     width: 84,
-    align: 'right',
     render: (r) => <span className="num">{formatBytes(r.rxBytes + r.txBytes)}</span>,
     sort: (r) => r.rxBytes + r.txBytes,
     sortDesc: true
@@ -103,34 +102,40 @@ const deviceColumns: Column<DeviceAggregate>[] = [
   {
     key: 'device',
     header: 'Source',
-    width: 200,
-    grow: 1.2,
+    width: 190,
     render: (d) => <Cell main={d.name ?? d.ip} sub={d.name ? d.ip : undefined} />,
-    sort: (d) => d.name?.toLowerCase() ?? ipSortKey(d.ip)
+    sort: (d) => d.name?.toLowerCase() ?? ipSortKey(d.ip),
+    copy: (d) => [d.ip, d.name]
   },
   { key: 'mac', header: 'MAC Address', width: 130, render: (d) => d.mac ?? '', sort: (d) => d.mac ?? '' },
-  { key: 'count', header: 'Connections', width: 90, align: 'right', render: (d) => <span className="num">{d.connections}</span>, sort: (d) => d.connections, sortDesc: true },
-  { key: 'rx', header: 'Down', width: 88, align: 'right', render: (d) => <span className="num">{formatBps(d.rxBps)}</span>, sort: (d) => d.rxBps, sortDesc: true },
-  { key: 'tx', header: 'Up', width: 88, align: 'right', render: (d) => <span className="num">{formatBps(d.txBps)}</span>, sort: (d) => d.txBps, sortDesc: true },
-  { key: 'bytes', header: 'Bytes', width: 84, align: 'right', render: (d) => <span className="num">{formatBytes(d.bytes)}</span>, sort: (d) => d.bytes, sortDesc: true },
+  { key: 'count', header: 'Connections', width: 90, render: (d) => <span className="num">{d.connections}</span>, sort: (d) => d.connections, sortDesc: true },
+  { key: 'rx', header: 'Down', width: 88, render: (d) => <span className="num">{formatBps(d.rxBps)}</span>, sort: (d) => d.rxBps, sortDesc: true },
+  { key: 'tx', header: 'Up', width: 88, render: (d) => <span className="num">{formatBps(d.txBps)}</span>, sort: (d) => d.txBps, sortDesc: true },
+  { key: 'bytes', header: 'Bytes', width: 84, render: (d) => <span className="num">{formatBytes(d.bytes)}</span>, sort: (d) => d.bytes, sortDesc: true },
   {
     key: 'top',
     header: 'Top Destinations',
     width: 220,
-    grow: 1.4,
-    render: (d) => <Cell main={d.topDestinations.join(', ')} title={d.topDestinations.join('\n')} />
+    grow: 1.5,
+    render: (d) => <Cell main={d.topDestinations.join(', ')} title={d.topDestinations.join('\n')} />,
+    copy: (d) => [d.topDestinations.join(', '), ...d.topDestinations]
   }
 ]
+
+export type ConnectionsMode = 'list' | 'source'
 
 interface Props {
   data: RouterData
   search: string
   onSearch: (s: string) => void
+  mode: ConnectionsMode
+  onMode: (mode: ConnectionsMode) => void
+  /** Clicking a source in "By Source" shows its connections (a step back returns here). */
+  onShowSource: (ip: string) => void
 }
 
-export function ConnectionsView({ data, search, onSearch }: Props) {
+export function ConnectionsView({ data, search, onSearch, mode, onMode, onShowSource }: Props) {
   const [proto, setProto] = useState<ProtocolFilter>('all')
-  const [mode, setMode] = useState<'list' | 'source'>('list')
   const [frozen, setFrozen] = useState<ConnectionRow[] | null>(null)
 
   const live = data.connections?.rows ?? []
@@ -159,7 +164,7 @@ export function ConnectionsView({ data, search, onSearch }: Props) {
             { value: 'list', label: 'List' },
             { value: 'source', label: 'By Source' }
           ]}
-          onChange={setMode}
+          onChange={onMode}
         />
         <button className={`btn${frozen ? ' on' : ''}`} onClick={() => setFrozen(frozen ? null : live)}>
           {frozen ? 'Resume' : 'Pause'}
@@ -188,10 +193,7 @@ export function ConnectionsView({ data, search, onSearch }: Props) {
           columns={deviceColumns}
           rowKey={(d) => d.ip}
           initialSort={{ key: 'bytes', dir: 'desc' }}
-          onRowClick={(d) => {
-            setMode('list')
-            onSearch(d.ip)
-          }}
+          onRowClick={(d) => onShowSource(d.ip)}
           empty="No connections"
         />
       )}

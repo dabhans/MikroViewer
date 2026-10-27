@@ -9,7 +9,7 @@ import { LogStore, logStorageBytes, pruneAll } from './logs/store'
 import { RouterSession, testConnection, type SessionCredentials, type SessionHost } from './routeros/session'
 import { compileQuery } from '../shared/logquery'
 import { serviceName } from '../shared/services'
-import type { LogEntry, LogExportRequest, LogQuery, ProfileInput, SessionEvent, Settings, Theme } from '../shared/types'
+import type { FirewallLogStatus, LogEntry, LogExportRequest, LogQuery, ProfileInput, SessionEvent, Settings, Theme } from '../shared/types'
 
 // Allows running with a separate data folder (e.g. for testing or a portable install).
 if (process.env.MIKROVIEWER_USER_DATA) app.setPath('userData', path.resolve(process.env.MIKROVIEWER_USER_DATA))
@@ -62,9 +62,9 @@ const host: SessionHost = {
 function logFor(id: string): LogStore {
   let s = logStores.get(id)
   if (!s) {
-    s = new LogStore(path.join(logsRoot, id), (added, updated) => {
+    s = new LogStore(path.join(logsRoot, id), (added) => {
       // Only the router on screen gets live updates; the others are written to disk only.
-      if (focusedId === id) send({ type: 'log', id, added, updated })
+      if (focusedId === id) send({ type: 'log', id, added })
     })
     logStores.set(id, s)
   }
@@ -134,6 +134,7 @@ function csvLine(values: unknown[]): string {
 
 const CSV_HEADER = [
   'Time',
+  'Start',
   'Type',
   'Action',
   'Protocol',
@@ -150,6 +151,7 @@ const CSV_HEADER = [
   'Out interface',
   'Rule',
   'Duration (s)',
+  'End reason',
   'Sent (bytes)',
   'Received (bytes)',
   'Message'
@@ -158,6 +160,7 @@ const CSV_HEADER = [
 function csvRow(e: LogEntry): unknown[] {
   return [
     localTime(e.t),
+    e.start !== undefined ? localTime(e.start) : '',
     e.type,
     e.action,
     e.protocol,
@@ -174,6 +177,7 @@ function csvRow(e: LogEntry): unknown[] {
     e.outInterface,
     e.rule ?? e.ruleNumber,
     e.durationSec !== undefined ? Math.round(e.durationSec) : '',
+    e.endReason,
     e.txBytes,
     e.rxBytes,
     e.message
@@ -242,6 +246,11 @@ function registerIpc(): void {
     const s = sessions.get(id)
     if (!s) throw new Error('Not connected to the router')
     return s.routerLog()
+  })
+
+  ipcMain.handle('session:firewallStatus', (_e, id: string): Promise<FirewallLogStatus> | FirewallLogStatus => {
+    const s = sessions.get(id)
+    return s ? s.firewallStatus() : { connected: false, lines: 0, unparsed: 0, rules: [] }
   })
 
   // ---------- Logs ----------
@@ -338,6 +347,10 @@ function createWindow(): void {
   })
 
   win.once('ready-to-show', () => win?.show())
+  win.on('app-command', (_e, cmd) => {
+    if (cmd === 'browser-backward') send({ type: 'navigate', direction: 'back' })
+    else if (cmd === 'browser-forward') send({ type: 'navigate', direction: 'forward' })
+  })
   win.on('closed', () => {
     win = null
   })
