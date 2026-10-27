@@ -2,16 +2,28 @@
 
 A desktop program for monitoring MikroTik routers. It runs entirely on your own computer and talks directly to the router's API – no server, no cloud, nothing to host.
 
+![Connections](docs/screenshots/connections.png)
+
 ## What it shows
 
 - **Overview** – system information, CPU, memory, disk, temperature and other sensors, WAN traffic and the most active devices
 - **Connections** – live connection table: protocol, source, destination, port, service, state and current traffic. Can be grouped by source.
-- **Logs** – a firewall-style log with search, time ranges and a timeline (see [Logs](#logs))
+- **Logs** – a firewall-style log of ended sessions and firewall records, with search, time ranges and a timeline (see [Logs](#logs))
 - **DHCP Leases** – IP, MAC, hostname, status and expiry
 - **Interfaces** – status, current traffic and totals
 - **System Log** – the router's own log
 
 Several routers can be added. They stay connected at the same time, and you switch between them in the menu on the left. Right-click a router to connect, disconnect or edit it.
+
+Right-click any cell in a table to copy its value, or the whole row. The mouse's back button (or Alt+Left) returns to where you were – for example from a device's connections back to DHCP Leases.
+
+| Overview | Logs |
+| --- | --- |
+| ![Overview](docs/screenshots/overview.png) | ![Logs](docs/screenshots/logs.png) |
+| **Firewall Logging** | **Dark theme** |
+| ![Firewall Logging](docs/screenshots/firewall-logging.png) | ![Dark theme](docs/screenshots/logs-dark.png) |
+
+The screenshots show the simulated router that comes with the project ([Demo](#demo-without-a-router)).
 
 ## Getting started
 
@@ -68,16 +80,24 @@ Click **+** next to **Routers**, then enter the router's address, username and p
 
 The log has two kinds of records:
 
-- **Sessions** – every connection through or to the router, from the connection table: source, destination, port, service, NAT, and when it closes, duration and bytes.
+- **Sessions** – every connection through or to the router, written when it ends, like a firewall's traffic log: source, destination, port, service, NAT, start, end, duration, bytes and how it ended (closed, reset or timed out). Connections that are still open are under **Connections**.
 - **Firewall** – packets logged by firewall rules with logging turned on, with the action (Accept, Drop, Reject …), the rule's comment, chain and interfaces.
 
-The router only writes firewall records for rules where logging is on. For example, to log what the default firewall drops from the internet:
+### Blocked traffic
+
+Blocked connections never get into the router's connection table, so they never show up as sessions. A port scan from the internet, or a device trying to reach a network it may not use, is only in the log if the rule that blocks it has logging turned on – RouterOS doesn't log anything by default.
+
+**Firewall Logging** (top right in Logs) shows whether the router's log arrives, and lists the drop and reject rules: whether each one logs and how many packets it has matched. A blocking rule whose counter goes up is blocking something. **Copy command** copies the RouterOS command that turns logging on for a rule. For example, to log what the default firewall drops from the internet:
 
 ```
 /ip firewall filter set [find comment="defconf: drop all not coming from LAN"] log=yes log-prefix="DROP-IN"
 ```
 
-**Searching:** pick a time range, type a query and press Enter. Right-click a cell to filter by (or exclude) its value, drag across the timeline to zoom in, and click a record to see all its details. **Queries** has ready-made searches, and **?** lists every field.
+Give each logging rule its own log prefix, so MikroViewer can tell which rule wrote a record and show its comment under **Rule**. Sessions have no rule: RouterOS doesn't record which rule let a connection through.
+
+### Searching
+
+Pick a time range, type a query and press Enter. Right-click a cell to filter by (or exclude) its value, drag across the timeline to zoom in, and click a record to see all its details – drag the bar above the details to make them taller. **Queries** has ready-made searches, and **?** lists every field.
 
 | Query | Finds |
 | --- | --- |
@@ -102,7 +122,7 @@ Terms next to each other must all match. `OR`, `NOT` and parentheses work as usu
 
 ## Good to know
 
-- **Logs are collected while MikroViewer runs.** Sessions are found by reading the connection table every 3 seconds, so very short connections can be missed. Firewall records arrive as the router writes them.
+- **Logs are collected while MikroViewer runs.** Sessions are found by reading the connection table every 3 seconds, so very short connections can be missed. A connection that ends while MikroViewer is disconnected is logged when it reconnects, with the end marked as unknown. Firewall records arrive as the router writes them.
 - **Stored logs:** in `%APPDATA%\MikroViewer\logs`, one file per router per hour, kept for 7 days by default (Settings). They contain IP addresses, names and traffic of the devices on the network.
 - **RouterOS versions:** RouterOS 6 and 7, including 7.20 and newer, where the connection table has separate port fields.
 - **Busy routers:** above 20,000 simultaneous connections, only the count is shown, to avoid loading the router.
