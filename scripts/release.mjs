@@ -12,10 +12,6 @@
 import { execFileSync, spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 
-// Versions up to 0.2.1 look for updates in this repository. Each release is copied there as well,
-// so they can update; archive the repository on GitHub when that is no longer needed.
-const LEGACY_REPO = 'dabhans/MikroViewer-releases'
-
 function findGh() {
   for (const gh of ['gh', 'C:\\Program Files\\GitHub CLI\\gh.exe']) {
     try {
@@ -91,17 +87,3 @@ run(['electron-builder', '--win', '--publish', 'always'], { GH_TOKEN: token })
 
 ghRun(['release', 'edit', tag, '--repo', repo, '--draft=false', '--latest'])
 console.log(`Done – https://github.com/${repo}/releases/tag/${tag}`)
-
-let legacyArchived = true
-try {
-  legacyArchived = JSON.parse(ghRun(['repo', 'view', LEGACY_REPO, '--json', 'isArchived'], { stdio: ['ignore', 'pipe', 'ignore'] })).isArchived
-} catch {
-  // deleted
-}
-if (!legacyArchived && !releaseState(LEGACY_REPO)) {
-  const files = [`MikroViewer-Setup-${version}.exe`, `MikroViewer-Setup-${version}.exe.blockmap`, `MikroViewer-${version}-portable.exe`, 'latest.yml']
-  console.log(`Copying the release to ${LEGACY_REPO} for older versions…`)
-  ghRun(['release', 'create', tag, '--repo', LEGACY_REPO, '--title', `MikroViewer ${version}`, '--latest',
-    '--notes', `See the release notes in [${repo}](https://github.com/${repo}/releases/tag/${tag}).`,
-    ...files.map((f) => `dist/${f}`)], { stdio: ['ignore', 'pipe', 'inherit'] })
-}

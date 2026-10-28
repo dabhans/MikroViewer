@@ -158,17 +158,8 @@ npm run mock
 
 Then add a router with address `127.0.0.1`, port `8728`, user `admin` and password `admin`. `--ros719` or `--ros6` simulates older RouterOS versions (ports inside the address fields). `--no-dns` lets the devices use an outside DNS server, so no domain names are shown, as in the screenshots.
 
-### Publishing an update
+## Contributing
 
-The installed app looks for updates in this repository's releases (configured in `electron-builder.yml` and `src/main/updater.ts`).
+Bug reports and ideas are welcome as [issues](https://github.com/dabhans/MikroViewer/issues). Changes go in as pull requests against `main`: build and try them as described above – the demo router works if you don't have a MikroTik at hand – and run `npm run typecheck` before opening the pull request.
 
-1. Commit your changes, then set the new version: `npm version minor` (or `patch`). This commits the version number and tags it.
-2. Build and publish, using your GitHub CLI login (`gh auth login`):
-
-```bash
-npm run release
-```
-
-The script pushes the commit and tag, builds, and publishes the release with notes listing the changes since the previous release. Edit the notes on GitHub afterwards if you like.
-
-Versions up to 0.2.1 look for updates in `dabhans/MikroViewer-releases`, so the script copies each release there too. Archive that repository on GitHub when those versions are no longer in use, and the copying stops.
+New versions are published by the maintainer ([RELEASING.md](RELEASING.md)).
