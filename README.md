@@ -126,6 +126,7 @@ Terms next to each other must all match. `OR`, `NOT` and parentheses work as usu
 - **Stored logs:** in `%APPDATA%\MikroViewer\logs`, one file per router per hour, kept for 7 days by default (Settings). They contain IP addresses, names and traffic of the devices on the network.
 - **RouterOS versions:** RouterOS 6 and 7, including 7.20 and newer, where the connection table has separate port fields.
 - **Busy routers:** above 20,000 simultaneous connections, only the count is shown, to avoid loading the router.
+- **Domain names** come from the router's DNS cache, so they're only shown when the devices use the router as their DNS server, as in RouterOS' default configuration. Devices that ask another DNS server show IP addresses only. Device names come from DHCP leases.
 - **IPv4 only:** connections are read from the IPv4 connection tracking table.
 - **Router profiles:** saved in `%APPDATA%\MikroViewer\routers.json`. Passwords are encrypted with Windows' own encryption (DPAPI).
 
@@ -155,7 +156,7 @@ The project includes a simulated router with realistic data, firewall rules and 
 npm run mock
 ```
 
-Then add a router with address `127.0.0.1`, port `8728`, user `admin` and password `admin`. `--ros719` or `--ros6` simulates older RouterOS versions (ports inside the address fields).
+Then add a router with address `127.0.0.1`, port `8728`, user `admin` and password `admin`. `--ros719` or `--ros6` simulates older RouterOS versions (ports inside the address fields). `--no-dns` lets the devices use an outside DNS server, so no domain names are shown, as in the screenshots.
 
 ### Publishing an update
 

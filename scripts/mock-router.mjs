@@ -7,6 +7,7 @@
 //   node scripts/mock-router.mjs --ros719               (RouterOS 7.19: ports inside the addresses)
 //   node scripts/mock-router.mjs --ros6                 (RouterOS 6: as 7.19, plus the old /system/health format)
 //   node scripts/mock-router.mjs --no-follow            (a router that can't stream its log)
+//   node scripts/mock-router.mjs --no-dns               (devices use an outside DNS server: no domain names)
 //   node scripts/mock-router.mjs --tls --cert c.pem --key k.pem --port 8729
 
 import net from 'node:net'
@@ -33,6 +34,7 @@ const SPLIT_PORTS = !ROS6 && !flag('ros719')
 const VERSION = ROS6 ? '6.49.17 (long-term)' : SPLIT_PORTS ? '7.20.2 (stable)' : '7.19.4 (stable)'
 const NO_HEALTH = flag('no-health')
 const NO_FOLLOW = flag('no-follow')
+const NO_DNS = flag('no-dns')
 let seed = Number(opt('seed', 1))
 
 function rand() {
@@ -113,8 +115,10 @@ function newConnection(now) {
   const d = pick(devices)
   let remote = pickRemote()
   if (rand() < 0.12) {
-    // DNS lookup against the router itself
-    remote = { name: undefined, ip: ROUTER_LAN, port: 53, proto: 'udp', down: [100, 600], local: true }
+    // DNS lookup against the router itself – or an outside DNS server, which leaves the router's DNS cache empty
+    remote = NO_DNS
+      ? { name: undefined, ip: '1.1.1.1', port: 53, proto: 'udp', down: [100, 600] }
+      : { name: undefined, ip: ROUTER_LAN, port: 53, proto: 'udp', down: [100, 600], local: true }
   }
   const srcPort = Math.floor(between(49152, 65535))
   const id = `*${(connSeq++).toString(16).toUpperCase()}`
@@ -362,6 +366,7 @@ function leaseRecords() {
 
 function dnsRecords() {
   const out = []
+  if (NO_DNS) return out
   for (const r of REMOTES) {
     if (!r.name) continue
     if (r.cname) {
