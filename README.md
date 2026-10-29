@@ -11,7 +11,7 @@ A desktop program for monitoring MikroTik routers. It runs entirely on your own 
 - **Logs** – a firewall-style log of ended sessions and firewall records, with search, time ranges and a timeline (see [Logs](#logs))
 - **DHCP Leases** – IP, MAC, hostname, status and expiry
 - **Interfaces** – status, current traffic and totals
-- **System Log** – the router's own log in plain language: who logged in, which devices got an address or joined the Wi-Fi, and what the firewall blocked. **Original messages** shows the router's own wording.
+- **System Log** – the router's own log in plain language: who logged in, which devices got an address or joined the Wi-Fi, and what the firewall blocked. **Original messages** shows the router's own wording. MikroViewer keeps the log itself, so older messages stay after the router has forgotten them (see [Good to know](#good-to-know)).
 
 Several routers can be added. They stay connected at the same time, and you switch between them in the menu on the left. Right-click a router to connect, disconnect or edit it.
 
@@ -118,12 +118,13 @@ Terms next to each other must all match. `OR`, `NOT` and parentheses work as usu
 
 ## Settings and updates
 
-**Settings** (bottom left) has the light or dark theme and how long logs are kept. **About** shows the version and checks for updates. The installed version downloads and installs updates itself; the portable version links to the download page.
+**Settings** (bottom left) has the light or dark theme, how long logs are kept and how much space they may take – when either limit is reached, the oldest logs are deleted. **About** shows the version and checks for updates. The installed version downloads and installs updates itself; the portable version links to the download page.
 
 ## Good to know
 
 - **Logs are collected while MikroViewer runs.** Sessions are found by reading the connection table every 3 seconds, so very short connections can be missed. A connection that ends while MikroViewer is disconnected is logged when it reconnects, with the end marked as unknown. Firewall records arrive as the router writes them.
-- **Stored logs:** in `%APPDATA%\MikroViewer\logs`, one file per router per hour, kept for 7 days by default (Settings). They contain IP addresses, names and traffic of the devices on the network.
+- **Stored logs:** in `%APPDATA%\MikroViewer\logs`, one file per router per hour, kept for 7 days and up to 1 GB in all by default (Settings). They contain IP addresses, names and traffic of the devices on the network.
+- **System Log history:** the router only remembers its last 1,000 log lines by default, and a firewall rule that logs can fill those in minutes. MikroViewer keeps every line it sees, also those already in the router's log when it connects, in `logs\<router>\system` – one file per day, under the same limits. Firewall lines are already in Logs, so System Log only keeps the newest 2,000 of them. Lines the router writes and forgets while MikroViewer isn't running are lost.
 - **RouterOS versions:** RouterOS 6 and 7, including 7.20 and newer, where the connection table has separate port fields.
 - **Busy routers:** above 20,000 simultaneous connections, only the count is shown, to avoid loading the router.
 - **Domain names** come from the router's DNS cache, so they're only shown when the devices use the router as their DNS server, as in RouterOS' default configuration. Devices that ask another DNS server show IP addresses only. Device names come from DHCP leases.
