@@ -9,6 +9,7 @@ import fsp from 'node:fs/promises'
 import path from 'node:path'
 import type { LogEntry, LogHistogram, LogQueryResult } from '../../shared/types'
 import type { LogPredicate } from '../../shared/logquery'
+import { systemLogFiles } from './routerlog'
 
 /** Records kept in memory. Queries that reach further back read the files. */
 const MEMORY_MAX = 200_000
@@ -335,12 +336,9 @@ export class LogStore implements LogSink {
     await fsp.rm(this.dir, { recursive: true, force: true })
   }
 
-  /** Deletes hour files older than the retention period. */
-  async prune(retentionDays: number): Promise<void> {
-    const limit = Date.now() - retentionDays * 24 * HOUR
-    for (const f of await this.files()) {
-      if (f.start + HOUR < limit) await fsp.rm(path.join(this.dir, f.name), { force: true })
-    }
+  /** The hour files with the time each covers – for pruning. */
+  async fileSpans(): Promise<{ file: string; start: number; end: number }[]> {
+    return (await this.files()).map((f) => ({ file: path.join(this.dir, f.name), start: f.start, end: f.start + HOUR }))
   }
 }
 
@@ -364,13 +362,35 @@ export async function logStorageBytes(root: string): Promise<number> {
   return total
 }
 
-/** Prunes old files of routers that have no store open (e.g. not connected this time). */
-export async function pruneAll(root: string, retentionDays: number): Promise<void> {
+/**
+ * Deletes the log files (all routers, Logs and System Log) older than the retention period, then
+ * the oldest ones until all of them fit in `maxBytes` (0: no limit). Files still being written are
+ * kept, so the newest hour of each router always stays.
+ */
+export async function pruneAll(root: string, retentionDays: number, maxBytes = 0): Promise<void> {
   let dirs: string[]
   try {
     dirs = await fsp.readdir(root)
   } catch {
     return
   }
-  for (const d of dirs) await new LogStore(path.join(root, d), () => {}).prune(retentionDays)
+  const now = Date.now()
+  const oldest = now - retentionDays * 24 * HOUR
+  const kept: { file: string; start: number; end: number; size: number }[] = []
+  for (const d of dirs) {
+    const dir = path.join(root, d)
+    const files = [...(await new LogStore(dir, () => {}).fileSpans()), ...(await systemLogFiles(path.join(dir, 'system')))]
+    for (const f of files) {
+      if (f.end < oldest) await fsp.rm(f.file, { force: true })
+      else kept.push({ ...f, size: (await fsp.stat(f.file).catch(() => ({ size: 0 }))).size })
+    }
+  }
+  if (!maxBytes) return
+  let total = kept.reduce((sum, f) => sum + f.size, 0)
+  for (const f of kept.sort((a, b) => a.start - b.start)) {
+    if (total <= maxBytes) break
+    if (f.end > now) continue
+    await fsp.rm(f.file, { force: true })
+    total -= f.size
+  }
 }

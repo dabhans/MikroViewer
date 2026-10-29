@@ -271,8 +271,10 @@ export interface FirewallLogStatus {
 }
 
 export interface RouterLogEntry {
-  id: string
-  time: string
+  /** Increases with every line MikroViewer keeps. */
+  id: number
+  /** When the router wrote it (ms). */
+  t: number
   topics: string[]
   message: string
   /** A firewall line, read like the firewall records in Logs. */
@@ -302,6 +304,8 @@ export type Theme = 'light' | 'dark'
 export interface Settings {
   theme: Theme
   logRetentionDays: number
+  /** The most the log files may take up, in MB (0: no limit). */
+  logMaxMB: number
 }
 
 export interface AppInfo {
@@ -346,7 +350,8 @@ export interface MikroApi {
   connect(id: string): Promise<void>
   disconnect(id: string): Promise<void>
   focus(id: string | null): void
-  routerLog(id: string): Promise<RouterLogEntry[]>
+  /** The router's log lines after `afterSeq` (an entry's id). */
+  routerLog(id: string, afterSeq?: number): Promise<RouterLogEntry[]>
   firewallStatus(id: string): Promise<FirewallLogStatus>
   queryLogs(q: LogQuery): Promise<LogQueryResult>
   exportLogs(req: LogExportRequest): Promise<{ saved: boolean; path?: string }>

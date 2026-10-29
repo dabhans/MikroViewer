@@ -32,7 +32,7 @@ export const STATE_LABEL: Record<SessionStatus['state'], string> = {
 }
 
 /** Pages that work from stored data, without a connection. */
-const OFFLINE_TABS: Tab[] = ['logs']
+const OFFLINE_TABS: Tab[] = ['logs', 'log']
 
 /** Where the user is – what the mouse's back button returns to. */
 interface Nav {
@@ -54,7 +54,7 @@ export function App() {
   const history = useRef<{ back: Nav[]; forward: Nav[] }>({ back: [], forward: [] })
   const { tab } = nav
   const [editing, setEditing] = useState<RouterProfile | 'new' | null>(null)
-  const [settings, setSettings] = useState<Settings>({ theme: window.api.initialTheme, logRetentionDays: 7 })
+  const [settings, setSettings] = useState<Settings>({ theme: window.api.initialTheme, logRetentionDays: 7, logMaxMB: 1024 })
   const [dialog, setDialog] = useState<'settings' | 'about' | null>(null)
   const [update, setUpdate] = useState<UpdateStatus>({ state: 'idle' })
   const [menu, setMenu] = useState<MenuState | null>(null)
@@ -154,9 +154,9 @@ export function App() {
     dispatch({ type: 'select', id })
   }
 
-  const changeSettings = (patch: Partial<Settings>): void => {
+  const changeSettings = async (patch: Partial<Settings>): Promise<void> => {
     setSettings((s) => ({ ...s, ...patch }))
-    void window.api.setSettings(patch).then(setSettings)
+    setSettings(await window.api.setSettings(patch))
   }
 
   const saveProfile = async (input: ProfileInput): Promise<string | undefined> => {
@@ -267,6 +267,8 @@ export function App() {
           </div>
         ) : tab === 'logs' ? (
           <LogsView key={profile.id} routerId={profile.id} connected={status.state === 'connected'} />
+        ) : tab === 'log' ? (
+          <RouterLogView key={profile.id} routerId={profile.id} leases={state.data.leases?.rows} />
         ) : live ? (
           <>
             {status.state === 'reconnecting' && <ReconnectNotice status={status} profileId={profile.id} />}
@@ -283,7 +285,6 @@ export function App() {
             )}
             {tab === 'dhcp' && <DhcpView data={state.data} onShowConnections={showConnections} />}
             {tab === 'interfaces' && <InterfacesView data={state.data} />}
-            {tab === 'log' && <RouterLogView routerId={profile.id} leases={state.data.leases?.rows} />}
           </>
         ) : (
           <ConnectPanel profile={profile} status={status} summary={state.summaries[profile.id]} onEdit={() => setEditing(profile)} />

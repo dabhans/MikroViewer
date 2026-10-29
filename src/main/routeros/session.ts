@@ -6,6 +6,7 @@ import { RouterOSClient, RouterOSError, type ApiRecord, type Stream } from './cl
 import { bool, num, parseDuration, parseHealth, primaryTemperature, splitHostPort, stripPrefix } from './parse'
 import { MATCH_PROPS, describeMatch, matchRule, parseFirewallMessage, type FirewallPacket, type FirewallRule, type RuleTable } from '../logs/firewall'
 import type { LogSink, NewLogEntry } from '../logs/store'
+import { RouterLogStore, parseLogTime, routerLogId, type RouterLogLine } from '../logs/routerlog'
 import type {
   ConnectionRow,
   FirewallLogStatus,
@@ -130,6 +131,11 @@ function endReason(tr: Tracked): SessionEndReason {
   return 'aged-out'
 }
 
+/** A line of the router's log, as the System Log keeps it. */
+function logLine(r: ApiRecord, t: number): RouterLogLine {
+  return { t, topics: (r.topics ?? '').split(',').filter(Boolean), message: r.message ?? '', rid: routerLogId(r['.id']) }
+}
+
 /** The log record of a connection that has ended. `lost`: it went away while we weren't watching. */
 function sessionRecord(tr: Tracked, lost: boolean): NewLogEntry {
   const row = tr.row
@@ -185,6 +191,8 @@ export class RouterSession {
   private logStream?: Stream
   private noLogStream = false
   private lastLogId = -1
+  /** New lines of the router's log wait here while the lines it already had are read. */
+  private logBacklog: RouterLogLine[] | null = null
   /** What the firewall log has delivered since connecting – shown under Firewall Logging. */
   private fwFeed: { feed: 'stream' | 'poll'; since: number; lines: number; unparsed: number; lastAt?: number } | null = null
 
@@ -203,7 +211,8 @@ export class RouterSession {
   constructor(
     readonly id: string,
     private readonly host: SessionHost,
-    private readonly log: LogSink
+    private readonly log: LogSink,
+    private readonly systemLog: RouterLogStore = new RouterLogStore(null)
   ) {
     this.status = { id, state: 'disconnected' }
   }
@@ -314,7 +323,28 @@ export class RouterSession {
     this.loop(gen, () => INTERFACE_INTERVAL, (c) => this.pollInterfaces(c))
     this.loop(gen, () => RESOURCE_INTERVAL, (c) => this.pollResource(c))
     this.loop(gen, () => (this.connThrottled ? 10000 : connectionInterval(this.connTotal)), (c) => this.pollConnections(c))
+    if (this.client) void this.readLogBacklog(this.client, gen)
     this.startFirewallLog(gen)
+  }
+
+  /** The lines already in the router's log: those written while MikroViewer wasn't watching. */
+  private async readLogBacklog(c: RouterOSClient, gen: number): Promise<void> {
+    this.logBacklog = []
+    try {
+      const recs = await c.print('/log')
+      await this.systemLog.ready
+      if (gen !== this.generation) return
+      const now = Date.now()
+      this.systemLog.addBacklog(recs.filter((r) => !r['.dead']).map((r) => logLine(r, parseLogTime(r.time ?? '', now))))
+    } catch (err) {
+      if (!c.isClosed) console.warn(`[${this.id}]`, (err as Error).message)
+    } finally {
+      if (gen === this.generation) {
+        const waiting = this.logBacklog ?? []
+        this.logBacklog = null
+        for (const l of waiting) this.systemLog.add(l)
+      }
+    }
   }
 
   /** New lines in the router's log arrive as a stream; older routers that can't stream are polled. */
@@ -351,7 +381,11 @@ export class RouterSession {
   }
 
   private onRouterLog(r: ApiRecord): void {
-    if (r['.dead'] || !(r.topics ?? '').split(',').includes('firewall')) return
+    if (r['.dead']) return
+    const line = logLine(r, Date.now())
+    if (this.logBacklog) this.logBacklog.push(line)
+    else this.systemLog.add(line)
+    if (!line.topics.includes('firewall')) return
     const message = r.message ?? ''
     const packet = parseFirewallMessage(message)
     const t = Date.now()
@@ -824,21 +858,12 @@ export class RouterSession {
 
   // ---------- Requests from the UI ----------
 
-  async routerLog(): Promise<RouterLogEntry[]> {
-    const c = this.client
-    if (!c || c.isClosed) throw new Error('Not connected to the router')
-    const recs = await c.print('/log')
-    return recs.map((r, i) => {
-      const topics = (r.topics ?? '').split(',').filter(Boolean)
-      const message = r.message ?? ''
-      const packet = topics.includes('firewall') ? parseFirewallMessage(message) : null
-      return {
-        id: r['.id'] ?? String(i),
-        time: r.time ?? '',
-        topics,
-        message,
-        ...(packet ? { firewall: this.firewallRecord(packet, message) } : {})
-      }
+  /** The router's log as MikroViewer has kept it – the lines after `afterSeq`, oldest first. Works offline too. */
+  async routerLog(afterSeq = 0): Promise<RouterLogEntry[]> {
+    await this.systemLog.ready
+    return this.systemLog.since(afterSeq).map((l) => {
+      const packet = l.topics.includes('firewall') ? parseFirewallMessage(l.message) : null
+      return { id: l.seq, t: l.t, topics: l.topics, message: l.message, ...(packet ? { firewall: this.firewallRecord(packet, l.message) } : {}) }
     })
   }
 

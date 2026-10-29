@@ -1,16 +1,35 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { LeaseRow, RouterLogEntry } from '../../../shared/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { SearchBox, matchesSearch } from '../components/Controls'
 import { cleanError } from '../components/RouterForm'
 import { routerLogReader, type LogLevel, type ReadableLogEntry } from '../explain'
-import { formatNumber } from '../format'
+import { formatDateTime, formatNumber, formatTime } from '../format'
 import { storageGet, storageSet } from '../storage'
 
-type Row = RouterLogEntry & ReadableLogEntry & { idx: number }
+type Row = RouterLogEntry & ReadableLogEntry
 
 const LEVEL_LABEL: Record<LogLevel, string> = { error: 'Error', warning: 'Warning', info: 'Info', debug: 'Debug' }
 const LEVEL_RANK: Record<LogLevel, number> = { error: 0, warning: 1, info: 2, debug: 3 }
+
+/** As many lines as MikroViewer keeps: firewall lines are counted apart, so they can't push the rest out. */
+const OTHER_MAX = 20_000
+const FIREWALL_MAX = 2_000
+
+const isFirewall = (e: RouterLogEntry): boolean => e.topics.includes('firewall')
+const isToday = (t: number): boolean => new Date(t).toDateString() === new Date().toDateString()
+
+/** Drops the oldest lines (the list is oldest first) above the limits. */
+function keepNewest(rows: RouterLogEntry[]): RouterLogEntry[] {
+  const fw = rows.filter(isFirewall).length
+  let dropFirewall = Math.max(0, fw - FIREWALL_MAX)
+  let dropOther = Math.max(0, rows.length - fw - OTHER_MAX)
+  if (!dropFirewall && !dropOther) return rows
+  return rows.filter((r) => {
+    if (isFirewall(r) ? dropFirewall-- > 0 : dropOther-- > 0) return false
+    return true
+  })
+}
 
 function Level({ level }: { level: LogLevel }) {
   return (
@@ -23,7 +42,19 @@ function Level({ level }: { level: LogLevel }) {
 
 function columns(original: boolean): Column<Row>[] {
   return [
-    { key: 'time', header: 'Time', width: 130, render: (r) => <span className="num">{r.time}</span>, sort: (r) => r.idx, sortDesc: true },
+    {
+      key: 'time',
+      header: 'Time',
+      width: 130,
+      render: (r) => (
+        <span className="num" title={formatDateTime(r.t)}>
+          {isToday(r.t) ? formatTime(r.t) : formatDateTime(r.t).slice(5)}
+        </span>
+      ),
+      // Lines from the same second keep the order the router wrote them in.
+      sort: (r) => `${String(r.t).padStart(15, '0')}${String(r.id).padStart(12, '0')}`,
+      sortDesc: true
+    },
     { key: 'level', header: 'Level', width: 76, render: (r) => <Level level={r.level} />, sort: (r) => LEVEL_RANK[r.level] },
     {
       key: 'category',
@@ -61,10 +92,14 @@ export function RouterLogView({ routerId, leases }: { routerId: string; leases?:
   const [category, setCategory] = useState('')
   const [original, setOriginal] = useState(() => storageGet('mv.syslog.original') === '1')
   const [auto, setAuto] = useState(true)
+  const lastId = useRef(0)
 
+  // MikroViewer keeps the router's log; each refresh only fetches the lines that are new.
   const load = useCallback(async () => {
     try {
-      setEntries(await window.api.routerLog(routerId))
+      const added = await window.api.routerLog(routerId, lastId.current)
+      if (added.length) lastId.current = added[added.length - 1].id
+      setEntries((prev) => (added.length ? keepNewest((prev ?? []).concat(added)) : (prev ?? [])))
       setError(null)
     } catch (err) {
       setError(cleanError(err))
@@ -72,7 +107,6 @@ export function RouterLogView({ routerId, leases }: { routerId: string; leases?:
   }, [routerId])
 
   useEffect(() => {
-    setEntries(null)
     void load()
   }, [load])
 
@@ -82,16 +116,21 @@ export function RouterLogView({ routerId, leases }: { routerId: string; leases?:
     return () => clearInterval(t)
   }, [auto, load])
 
-  // Device names in the messages come from the DHCP leases.
+  // Device names in the messages come from the DHCP leases. Lines are read once, and again when a name changes.
+  const leaseKey = (leases ?? []).map((l) => `${l.mac}=${l.address}=${l.comment ?? l.hostName ?? ''}`).join('|')
+  const reader = useMemo(() => ({ read: routerLogReader(leases), cache: new Map<number, ReadableLogEntry>() }), [leaseKey])
   const rows = useMemo<Row[] | null>(() => {
     if (!entries) return null
-    const read = routerLogReader(leases)
-    return entries.map((e, idx) => ({ ...e, ...read(e), idx }))
-  }, [entries, leases])
+    return entries.map((e) => {
+      let r = reader.cache.get(e.id)
+      if (!r) reader.cache.set(e.id, (r = reader.read(e)))
+      return { ...e, ...r }
+    })
+  }, [entries, reader])
 
   const categories = useMemo(() => [...new Set((rows ?? []).map((r) => r.category))].sort(), [rows])
   const filtered = useMemo(
-    () => (rows ?? []).filter((r) => (!category || r.category === category) && matchesSearch(search, r.text, r.message, r.time, r.category, ...r.topics)),
+    () => (rows ?? []).filter((r) => (!category || r.category === category) && matchesSearch(search, r.text, r.message, r.category, ...r.topics)),
     [rows, category, search]
   )
   const cols = useMemo(() => columns(original), [original])
@@ -132,7 +171,7 @@ export function RouterLogView({ routerId, leases }: { routerId: string; leases?:
         </span>
       </div>
       {error && <div className="notice error">{error}</div>}
-      <DataTable rows={filtered} columns={cols} rowKey={(r) => r.id} initialSort={{ key: 'time', dir: 'desc' }} empty={rows ? 'No entries' : 'Loading…'} />
+      <DataTable rows={filtered} columns={cols} rowKey={(r) => String(r.id)} initialSort={{ key: 'time', dir: 'desc' }} empty={rows ? 'No entries' : 'Loading…'} />
     </div>
   )
 }

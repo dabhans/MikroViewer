@@ -6,6 +6,7 @@ import { ProfileStore } from './profiles'
 import { SettingsStore } from './settings'
 import { Updater } from './updater'
 import { LogStore, logStorageBytes, pruneAll } from './logs/store'
+import { RouterLogStore } from './logs/routerlog'
 import { RouterSession, testConnection, type SessionCredentials, type SessionHost } from './routeros/session'
 import { compileQuery } from '../shared/logquery'
 import { serviceName } from '../shared/services'
@@ -21,7 +22,8 @@ const THEME_COLORS: Record<Theme, { header: string; symbols: string; background:
   dark: { header: '#0f1620', symbols: '#d6dee8', background: '#131b25' }
 }
 const MAX_RESULTS = 20000
-const PRUNE_INTERVAL = 3600_000
+const PRUNE_INTERVAL = 10 * 60_000
+const MB = 1024 * 1024
 
 let win: BrowserWindow | null = null
 let store: ProfileStore
@@ -30,6 +32,7 @@ let updater: Updater
 let logsRoot: string
 const sessions = new Map<string, RouterSession>()
 const logStores = new Map<string, LogStore>()
+const systemLogs = new Map<string, RouterLogStore>()
 let focusedId: string | null = null
 
 function send(event: SessionEvent): void {
@@ -71,10 +74,26 @@ function logFor(id: string): LogStore {
   return s
 }
 
+/** The router's own log (System Log), next to its other logs. */
+function systemLogFor(id: string): RouterLogStore {
+  let s = systemLogs.get(id)
+  if (!s) {
+    s = new RouterLogStore(path.join(logsRoot, id, 'system'))
+    systemLogs.set(id, s)
+  }
+  return s
+}
+
+/** Deletes logs older than the retention period, then the oldest until they fit in the size limit. */
+function pruneLogs(): Promise<void> {
+  const s = settings.get()
+  return pruneAll(logsRoot, s.logRetentionDays, s.logMaxMB * MB)
+}
+
 function getSession(id: string): RouterSession {
   let s = sessions.get(id)
   if (!s) {
-    s = new RouterSession(id, host, logFor(id))
+    s = new RouterSession(id, host, logFor(id), systemLogFor(id))
     sessions.set(id, s)
   }
   return s
@@ -242,10 +261,9 @@ function registerIpc(): void {
     if (focusedId) getSession(focusedId).setFocused(true)
   })
 
-  ipcMain.handle('session:routerLog', (_e, id: string) => {
-    const s = sessions.get(id)
-    if (!s) throw new Error('Not connected to the router')
-    return s.routerLog()
+  ipcMain.handle('session:routerLog', (_e, id: string, afterSeq?: number) => {
+    if (!store.get(id)) throw new Error('Unknown router')
+    return getSession(id).routerLog(Number(afterSeq) || 0)
   })
 
   ipcMain.handle('session:firewallStatus', (_e, id: string): Promise<FirewallLogStatus> | FirewallLogStatus => {
@@ -292,6 +310,7 @@ function registerIpc(): void {
 
   ipcMain.handle('logs:delete', async () => {
     for (const s of logStores.values()) await s.clear()
+    for (const s of systemLogs.values()) await s.clear()
     await fsp.rm(logsRoot, { recursive: true, force: true })
   })
 
@@ -304,11 +323,12 @@ function registerIpc(): void {
 
   ipcMain.handle('settings:get', () => settings.get())
 
-  ipcMain.handle('settings:set', (_e, patch: Partial<Settings>) => {
+  ipcMain.handle('settings:set', async (_e, patch: Partial<Settings>) => {
     const before = settings.get()
     const next = settings.set(patch ?? {})
     if (next.theme !== before.theme) applyTheme(next.theme)
-    if (next.logRetentionDays < before.logRetentionDays) void pruneAll(logsRoot, next.logRetentionDays)
+    // Done before answering, so Settings can show the space the logs take afterwards.
+    if (next.logRetentionDays !== before.logRetentionDays || next.logMaxMB !== before.logMaxMB) await pruneLogs()
     return next
   })
 
@@ -397,7 +417,7 @@ if (!app.requestSingleInstanceLock()) {
 
     for (const p of store.list()) if (p.autoConnect) void getSession(p.id).connect({ retryOnFail: true })
 
-    const prune = (): void => void pruneAll(logsRoot, settings.get().logRetentionDays)
+    const prune = (): void => void pruneLogs()
     prune()
     setInterval(prune, PRUNE_INTERVAL)
     if (app.isPackaged) setTimeout(() => void updater.check(), 8000)
@@ -410,6 +430,7 @@ if (!app.requestSingleInstanceLock()) {
   app.on('before-quit', () => {
     for (const s of sessions.values()) s.dispose()
     for (const l of logStores.values()) l.flushSync()
+    for (const l of systemLogs.values()) l.flushSync()
   })
 
   app.on('window-all-closed', () => {

@@ -1,11 +1,14 @@
-// App settings (theme, log retention) in settings.json next to the router profiles.
+// App settings (theme, how long logs are kept and how much space they may take) in settings.json
+// next to the router profiles.
 
 import fs from 'node:fs'
 import path from 'node:path'
 import type { Settings } from '../shared/types'
 
-const DEFAULTS: Settings = { theme: 'light', logRetentionDays: 7 }
+const DEFAULTS: Settings = { theme: 'light', logRetentionDays: 7, logMaxMB: 1024 }
 export const RETENTION_CHOICES = [1, 7, 30, 90]
+/** MB; 0 is no limit. */
+export const SIZE_CHOICES = [100, 250, 500, 1024, 2048, 5120, 0]
 
 export class SettingsStore {
   private data: Settings
@@ -35,7 +38,8 @@ export class SettingsStore {
   private validate(s: Settings): Settings {
     return {
       theme: s.theme === 'dark' ? 'dark' : 'light',
-      logRetentionDays: RETENTION_CHOICES.includes(Number(s.logRetentionDays)) ? Number(s.logRetentionDays) : DEFAULTS.logRetentionDays
+      logRetentionDays: RETENTION_CHOICES.includes(Number(s.logRetentionDays)) ? Number(s.logRetentionDays) : DEFAULTS.logRetentionDays,
+      logMaxMB: SIZE_CHOICES.includes(Number(s.logMaxMB)) ? Number(s.logMaxMB) : DEFAULTS.logMaxMB
     }
   }
 }

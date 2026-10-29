@@ -10,9 +10,9 @@ type Traffic = Omit<LogEntry, 'id' | 't'>
 
 const isRouter = (name: string | undefined): boolean => !!name && (name === 'Router' || name.endsWith('(router)'))
 
-/** "Office-PC (192.168.88.23)", "142.250.74.46 on the internet", "the router itself" */
+/** "Office-PC (192.168.88.23)", "142.250.74.46 on the internet", "the router" */
 function endpoint(ip: string, name: string | undefined): string {
-  if (isRouter(name)) return 'the router itself'
+  if (isRouter(name)) return 'the router'
   if (name) return `${name} (${ip})`
   return isPrivateIp(ip) ? `${ip} on your network` : `${ip} on the internet`
 }
@@ -48,28 +48,32 @@ function explainFirewall(e: Traffic): string {
         : e.protocol === 'icmp'
           ? `an ICMP message${e.icmp ? ` (${e.icmp})` : ''}`
           : 'a packet'
-  const dst = e.chain === 'input' ? 'the router itself' : endpoint(e.dst, e.dstName)
+  const dst = e.chain === 'input' ? 'the router' : endpoint(e.dst, e.dstName)
   const service = serviceText(e)
-  const out = [`The router ${FIREWALL_VERB[e.action]} ${packet} from ${endpoint(e.src, e.srcName)} to ${service ? `${service} at ${dst}` : dst}.`]
+  const out = [`The router ${FIREWALL_VERB[e.action]} ${packet} from ${endpoint(e.src, e.srcName)} to ${service ? `${service} ${e.chain === 'input' ? 'on' : 'at'} ${dst}` : dst}.`]
 
-  if (e.nat?.kind === 'dstnat') out.push(`It was a port forward: the connection arrived at the router’s public address and was passed on to ${e.nat.address}.`)
-  else if (e.nat?.kind === 'srcnat') out.push(`On the way out, the router replaced the sender’s address with ${withoutPort(e.nat.address)} (NAT).`)
-  if (e.connState?.includes('invalid')) out.push('This usually happens when one side keeps sending after the connection was closed or timed out.')
-
-  if (e.action === 'drop') out.push('The sender got no answer.')
-  if (e.action === 'reject') out.push('The sender was told that the connection was refused.')
-  const blocked = e.action === 'drop' || e.action === 'reject'
-  if (blocked && !isPrivateIp(e.src) && (e.chain === 'input' || isRouter(e.dstName))) {
-    out.push('Attempts like this from the internet are common – mostly automated scans – and blocking them is what the rule is for.')
-  }
-  if (e.rule) out.push(`It was logged by the firewall rule “${e.rule}”${e.ruleNumber ? ` (${e.ruleNumber})` : ''}.`)
+  if (e.nat?.kind === 'dstnat') out.push(`It came in through a port forward to ${e.nat.address}.`)
+  else if (e.nat?.kind === 'srcnat') out.push(`The internet saw the router’s address, ${withoutPort(e.nat.address)} (NAT).`)
+  if (e.connState?.includes('invalid')) out.push('Usually a leftover from a connection that was already closed.')
+  if (e.action === 'reject') out.push('The sender was told it was refused.')
+  if ((e.action === 'drop' || e.action === 'reject') && !isPrivateIp(e.src)) out.push('Scans like this from the internet are common and harmless when blocked.')
   return out.join(' ')
 }
 
-const END_TEXT: Record<'fin' | 'reset' | 'lost', string> = {
-  fin: 'It was closed normally.',
-  reset: 'It was cut off with a reset (TCP RST) – apps often close connections this way.',
-  lost: 'It ended while MikroViewer was disconnected, so the exact end is unknown.'
+/** How the session ended, continuing "It lasted 2m". */
+function ending(e: LogEntry): string {
+  switch (e.endReason) {
+    case 'fin':
+      return 'was closed normally'
+    case 'reset':
+      return 'was cut off with a reset (TCP RST)'
+    case 'aged-out':
+      return e.protocol === 'tcp' ? 'timed out without being closed' : `timed out, as ${e.protocol.toUpperCase()} connections do`
+    case 'lost':
+      return 'ended while MikroViewer was disconnected'
+    default:
+      return ''
+  }
 }
 
 /** What a session record means, in a few sentences. */
@@ -79,30 +83,25 @@ function explainSession(e: LogEntry): string {
   const out: string[] = []
 
   if (e.nat?.kind === 'dstnat') {
-    out.push(`${src} connected to ${service ? `${service} on ` : ''}the router’s public address, and the router passed the connection on to ${e.nat.address} – a port forward.`)
+    const name = serviceName(e.protocol, e.dstPort)
+    out.push(`${src} connected through a port forward to ${e.nat.address}${name ? ` (${name})` : ''}.`)
   } else if (serviceName(e.protocol, e.dstPort) === 'DNS') {
     out.push(`${src} looked up a domain name with ${isRouter(e.dstName) ? 'the router’s DNS server' : `the DNS server ${endpoint(e.dst, e.dstName)}`}.`)
   } else if (isPing(e)) {
     out.push(`${src} pinged ${endpoint(e.dst, e.dstName)}.`)
   } else {
-    out.push(`${src} had a connection to ${endpoint(e.dst, e.dstName)}${service ? ` using ${service}` : ''}.`)
+    out.push(`${src} connected to ${endpoint(e.dst, e.dstName)}${service ? ` using ${service}` : ''}.`)
   }
 
+  const end = ending(e)
   if (e.durationSec !== undefined && !(e.approx && e.durationSec < 1)) {
-    const bytes = e.txBytes !== undefined || e.rxBytes !== undefined ? `, with ${formatBytes(e.txBytes)} sent and ${formatBytes(e.rxBytes)} received` : ''
-    out.push(`It lasted ${e.approx ? 'at least ' : ''}${formatDuration(e.durationSec)}${bytes}.`)
+    const bytes = e.txBytes !== undefined || e.rxBytes !== undefined ? ` (${formatBytes(e.txBytes)} sent, ${formatBytes(e.rxBytes)} received)` : ''
+    out.push(`It lasted ${e.approx ? 'at least ' : ''}${formatDuration(e.durationSec)}${bytes}${end ? ` and ${end}` : ''}.`)
+  } else if (end) {
+    out.push(`It ${end}.`)
   }
-  if (e.startBefore) out.push('It was already open when MikroViewer started watching, so it may have started earlier.')
-  if (e.endReason === 'aged-out') {
-    out.push(
-      e.protocol === 'tcp'
-        ? 'It was never closed – the router removed it after a while with no traffic.'
-        : `It ended after a while with no traffic – ${e.protocol.toUpperCase()} has no way to close a connection, so the router times it out.`
-    )
-  } else if (e.endReason) {
-    out.push(END_TEXT[e.endReason])
-  }
-  if (e.nat?.kind === 'srcnat') out.push(`On the way out, the router replaced the device’s address with its public address ${withoutPort(e.nat.address)} (NAT).`)
+  if (e.startBefore) out.push('It was already open when MikroViewer started watching.')
+  if (e.nat?.kind === 'srcnat') out.push(`The internet saw the router’s address, ${withoutPort(e.nat.address)} (NAT).`)
   return out.join(' ')
 }
 

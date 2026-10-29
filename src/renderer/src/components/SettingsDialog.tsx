@@ -11,9 +11,19 @@ const RETENTION = [
   { days: 90, label: '90 days' }
 ]
 
+const SIZE_LIMIT = [
+  { mb: 100, label: '100 MB' },
+  { mb: 250, label: '250 MB' },
+  { mb: 500, label: '500 MB' },
+  { mb: 1024, label: '1 GB' },
+  { mb: 2048, label: '2 GB' },
+  { mb: 5120, label: '5 GB' },
+  { mb: 0, label: 'No limit' }
+]
+
 interface Props {
   settings: Settings
-  onChange: (patch: Partial<Settings>) => void
+  onChange: (patch: Partial<Settings>) => Promise<void>
   onClose: () => void
 }
 
@@ -33,6 +43,9 @@ export function SettingsDialog({ settings, onChange, onClose }: Props) {
       setError(cleanError(err))
     }
   }
+
+  // Old logs are deleted when a limit goes down; the space they take is shown again afterwards.
+  const changeLimit = (patch: Partial<Settings>): void => void onChange(patch).then(loadStorage)
 
   const deleteLogs = async (): Promise<void> => {
     if (!confirmDelete) {
@@ -69,7 +82,7 @@ export function SettingsDialog({ settings, onChange, onClose }: Props) {
             id="set-retention"
             className="select"
             value={settings.logRetentionDays}
-            onChange={(e) => onChange({ logRetentionDays: Number(e.target.value) })}
+            onChange={(e) => changeLimit({ logRetentionDays: Number(e.target.value) })}
           >
             {RETENTION.map((r) => (
               <option key={r.days} value={r.days}>
@@ -78,6 +91,19 @@ export function SettingsDialog({ settings, onChange, onClose }: Props) {
             ))}
           </select>
         </div>
+        <label className="lbl" htmlFor="set-size">
+          Use at most
+        </label>
+        <div className="row">
+          <select id="set-size" className="select" value={settings.logMaxMB} onChange={(e) => changeLimit({ logMaxMB: Number(e.target.value) })}>
+            {SIZE_LIMIT.map((s) => (
+              <option key={s.mb} value={s.mb}>
+                {s.label}
+              </option>
+            ))}
+          </select>
+        </div>
+        <span className="muted full">When either limit is reached, the oldest logs are deleted.</span>
         <span className="lbl">Storage</span>
         <span className="num">{storage === null ? '…' : formatBytes(storage)}</span>
         <div className="row full">
