@@ -262,14 +262,22 @@ body[data-platform='darwin'] .header {
 }
 .nav-add {
   margin-left: auto;
+  display: grid;
+  place-items: center;
+  padding: 0;
   width: 22px;
   height: 22px;
   border: none;
   background: transparent;
   color: var(--nav-text);
   cursor: pointer;
-  font-size: 16px;
-  line-height: 1;
+}
+.nav-add svg {
+  width: 10px;
+  height: 10px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  fill: none;
 }
 .nav-add:hover {
   background: var(--nav-hover);
@@ -539,6 +547,40 @@ body[data-platform='darwin'] .header {
 }
 .action.log i {
   background: var(--muted);
+}
+
+/* Severity in the System Log, drawn like the actions in Logs. */
+.level {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.level i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--muted);
+}
+.level.info i {
+  background: var(--accent);
+}
+.level.warning {
+  color: var(--warn);
+  font-weight: 600;
+}
+.level.warning i {
+  background: var(--warn);
+}
+.level.error {
+  color: var(--err);
+  font-weight: 600;
+}
+.level.error i {
+  background: var(--err);
+}
+.level.debug {
+  color: var(--muted);
 }
 
 /* ---------- Panels ---------- */
@@ -917,6 +959,10 @@ body[data-platform='darwin'] .header {
   color: var(--err);
   flex: none;
 }
+/* As tall as the "new" button, so the timeline doesn't move when it appears. */
+.status-row {
+  min-height: 22px;
+}
 
 .logs-body {
   flex: 1;
@@ -989,6 +1035,10 @@ body.resizing * {
 .rules .rule-text {
   word-break: break-word;
 }
+/* Its label lines up with the first line of text in the row. */
+.rules .btn {
+  margin: -3px 0;
+}
 .details .panel-body {
   flex: 1;
   min-height: 0;
@@ -1019,6 +1069,11 @@ body.resizing * {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  user-select: text;
+}
+.explain {
+  margin: 2px 0 10px;
+  line-height: 1.5;
   user-select: text;
 }
 .raw {
@@ -1120,21 +1175,34 @@ body.resizing * {
 .modal.wide {
   width: 540px;
 }
+/* The title lines up with the dialog's content; the × keeps close to the edge. */
 .modal .panel-head {
   height: 32px;
+  padding: 0 6px 0 14px;
 }
 .modal-close {
   margin-left: auto;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border: none;
   background: none;
   cursor: pointer;
-  font-size: 16px;
   color: var(--text-2);
   width: 24px;
   height: 24px;
 }
 .modal-close:hover {
   background: var(--close-hover);
+  color: var(--text);
+}
+.modal-close svg {
+  width: 10px;
+  height: 10px;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  fill: none;
 }
 
 .form {

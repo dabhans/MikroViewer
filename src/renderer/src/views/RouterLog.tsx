@@ -1,47 +1,70 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { RouterLogEntry } from '../../../shared/types'
+import type { LeaseRow, RouterLogEntry } from '../../../shared/types'
 import { DataTable, type Column } from '../components/DataTable'
 import { SearchBox, matchesSearch } from '../components/Controls'
 import { cleanError } from '../components/RouterForm'
+import { routerLogReader, type LogLevel, type ReadableLogEntry } from '../explain'
 import { formatNumber } from '../format'
+import { storageGet, storageSet } from '../storage'
 
-type Row = RouterLogEntry & { idx: number }
+type Row = RouterLogEntry & ReadableLogEntry & { idx: number }
 
-function severity(topics: string[]): string {
-  if (topics.includes('error') || topics.includes('critical')) return 'err'
-  if (topics.includes('warning')) return 'warn'
-  return ''
+const LEVEL_LABEL: Record<LogLevel, string> = { error: 'Error', warning: 'Warning', info: 'Info', debug: 'Debug' }
+const LEVEL_RANK: Record<LogLevel, number> = { error: 0, warning: 1, info: 2, debug: 3 }
+
+function Level({ level }: { level: LogLevel }) {
+  return (
+    <span className={`level ${level}`}>
+      <i />
+      {LEVEL_LABEL[level]}
+    </span>
+  )
 }
 
-const columns: Column<Row>[] = [
-  { key: 'time', header: 'Time', width: 130, render: (r) => <span className="num">{r.time}</span>, sort: (r) => r.idx, sortDesc: true },
-  { key: 'topics', header: 'Topics', width: 170, render: (r) => <span className={severity(r.topics)}>{r.topics.join(', ')}</span>, sort: (r) => r.topics.join(',') },
-  {
-    key: 'message',
-    header: 'Message',
-    width: 400,
-    grow: 1,
-    render: (r) => (
-      <span className={`cell selectable ${severity(r.topics)}`} title={r.message}>
-        {r.message}
-      </span>
-    )
-  }
-]
+function columns(original: boolean): Column<Row>[] {
+  return [
+    { key: 'time', header: 'Time', width: 130, render: (r) => <span className="num">{r.time}</span>, sort: (r) => r.idx, sortDesc: true },
+    { key: 'level', header: 'Level', width: 76, render: (r) => <Level level={r.level} />, sort: (r) => LEVEL_RANK[r.level] },
+    {
+      key: 'category',
+      header: 'Category',
+      width: 96,
+      render: (r) => <span title={`Topics: ${r.topics.join(', ')}`}>{r.category}</span>,
+      sort: (r) => r.category,
+      copy: (r) => [r.category, r.topics.join(',')]
+    },
+    {
+      key: 'message',
+      header: 'Message',
+      width: 400,
+      // Extra width goes to the messages rather than the short columns.
+      grow: 4,
+      render: (r) => {
+        const text = original ? r.message : r.text
+        return (
+          <span className="cell selectable" title={text === r.message ? r.message : `${text}\n\nThe router wrote: ${r.message}`}>
+            {text}
+          </span>
+        )
+      },
+      copy: (r) => [original ? r.message : r.text, original ? r.text : r.message]
+    }
+  ]
+}
 
 const REFRESH_MS = 5000
 
-export function RouterLogView({ routerId }: { routerId: string }) {
-  const [rows, setRows] = useState<Row[] | null>(null)
+export function RouterLogView({ routerId, leases }: { routerId: string; leases?: LeaseRow[] }) {
+  const [entries, setEntries] = useState<RouterLogEntry[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
-  const [topic, setTopic] = useState('')
+  const [category, setCategory] = useState('')
+  const [original, setOriginal] = useState(() => storageGet('mv.syslog.original') === '1')
   const [auto, setAuto] = useState(true)
 
   const load = useCallback(async () => {
     try {
-      const entries = await window.api.routerLog(routerId)
-      setRows(entries.map((e, idx) => ({ ...e, idx })))
+      setEntries(await window.api.routerLog(routerId))
       setError(null)
     } catch (err) {
       setError(cleanError(err))
@@ -49,7 +72,7 @@ export function RouterLogView({ routerId }: { routerId: string }) {
   }, [routerId])
 
   useEffect(() => {
-    setRows(null)
+    setEntries(null)
     void load()
   }, [load])
 
@@ -59,25 +82,44 @@ export function RouterLogView({ routerId }: { routerId: string }) {
     return () => clearInterval(t)
   }, [auto, load])
 
-  const topics = useMemo(() => [...new Set((rows ?? []).flatMap((r) => r.topics))].sort(), [rows])
+  // Device names in the messages come from the DHCP leases.
+  const rows = useMemo<Row[] | null>(() => {
+    if (!entries) return null
+    const read = routerLogReader(leases)
+    return entries.map((e, idx) => ({ ...e, ...read(e), idx }))
+  }, [entries, leases])
+
+  const categories = useMemo(() => [...new Set((rows ?? []).map((r) => r.category))].sort(), [rows])
   const filtered = useMemo(
-    () => (rows ?? []).filter((r) => (!topic || r.topics.includes(topic)) && matchesSearch(search, r.message, r.time, ...r.topics)),
-    [rows, topic, search]
+    () => (rows ?? []).filter((r) => (!category || r.category === category) && matchesSearch(search, r.text, r.message, r.time, r.category, ...r.topics)),
+    [rows, category, search]
   )
+  const cols = useMemo(() => columns(original), [original])
 
   return (
     <div className="page">
       <div className="toolbar">
         <h1 className="page-title">System Log</h1>
         <SearchBox value={search} onChange={setSearch} />
-        <select className="select" value={topic} onChange={(e) => setTopic(e.target.value)}>
-          <option value="">All topics</option>
-          {topics.map((t) => (
-            <option key={t} value={t}>
-              {t}
+        <select className="select" value={category} onChange={(e) => setCategory(e.target.value)}>
+          <option value="">All categories</option>
+          {categories.map((c) => (
+            <option key={c} value={c}>
+              {c}
             </option>
           ))}
         </select>
+        <label className="check" title="Show the messages exactly as the router writes them">
+          <input
+            type="checkbox"
+            checked={original}
+            onChange={(e) => {
+              setOriginal(e.target.checked)
+              storageSet('mv.syslog.original', e.target.checked ? '1' : '0')
+            }}
+          />
+          Original messages
+        </label>
         <label className="check">
           <input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />
           Auto refresh
@@ -90,7 +132,7 @@ export function RouterLogView({ routerId }: { routerId: string }) {
         </span>
       </div>
       {error && <div className="notice error">{error}</div>}
-      <DataTable rows={filtered} columns={columns} rowKey={(r) => r.id} initialSort={{ key: 'time', dir: 'desc' }} empty={rows ? 'No entries' : 'Loading…'} />
+      <DataTable rows={filtered} columns={cols} rowKey={(r) => r.id} initialSort={{ key: 'time', dir: 'desc' }} empty={rows ? 'No entries' : 'Loading…'} />
     </div>
   )
 }

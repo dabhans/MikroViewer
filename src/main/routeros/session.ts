@@ -4,7 +4,7 @@
 
 import { RouterOSClient, RouterOSError, type ApiRecord, type Stream } from './client'
 import { bool, num, parseDuration, parseHealth, primaryTemperature, splitHostPort, stripPrefix } from './parse'
-import { MATCH_PROPS, describeMatch, matchRule, parseFirewallMessage, type FirewallRule, type RuleTable } from '../logs/firewall'
+import { MATCH_PROPS, describeMatch, matchRule, parseFirewallMessage, type FirewallPacket, type FirewallRule, type RuleTable } from '../logs/firewall'
 import type { LogSink, NewLogEntry } from '../logs/store'
 import type {
   ConnectionRow,
@@ -364,9 +364,13 @@ export class RouterSession {
       this.log.add({ t, type: 'firewall', action: 'log', protocol: '', src: '', dst: '', message })
       return
     }
+    this.log.add({ t, ...this.firewallRecord(packet, message) })
+  }
+
+  /** A firewall log line as a record: the packet, the rule that logged it and the names of both ends. */
+  private firewallRecord(packet: FirewallPacket, message: string): Omit<NewLogEntry, 't'> {
     const match = matchRule(this.rules, packet.chain, packet.prefix)
-    this.log.add({
-      t,
+    return {
       type: 'firewall',
       ...packet,
       action: match.action,
@@ -375,7 +379,7 @@ export class RouterSession {
       srcName: this.nameForIp(packet.src, false),
       dstName: this.nameForIp(packet.dst, true),
       message
-    })
+    }
   }
 
   private loop(gen: number, interval: () => number, fn: (c: RouterOSClient) => Promise<void>): void {
@@ -824,12 +828,18 @@ export class RouterSession {
     const c = this.client
     if (!c || c.isClosed) throw new Error('Not connected to the router')
     const recs = await c.print('/log')
-    return recs.map((r, i) => ({
-      id: r['.id'] ?? String(i),
-      time: r.time ?? '',
-      topics: (r.topics ?? '').split(',').filter(Boolean),
-      message: r.message ?? ''
-    }))
+    return recs.map((r, i) => {
+      const topics = (r.topics ?? '').split(',').filter(Boolean)
+      const message = r.message ?? ''
+      const packet = topics.includes('firewall') ? parseFirewallMessage(message) : null
+      return {
+        id: r['.id'] ?? String(i),
+        time: r.time ?? '',
+        topics,
+        message,
+        ...(packet ? { firewall: this.firewallRecord(packet, message) } : {})
+      }
+    })
   }
 
   get identity(): string | undefined {

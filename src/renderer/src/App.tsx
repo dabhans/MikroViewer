@@ -208,8 +208,10 @@ export function App() {
         <div className="nav-scroll">
           <div className="nav-section">
             Routers
-            <button className="nav-add" title="Add router" onClick={() => setEditing('new')}>
-              +
+            <button className="nav-add" title="Add router" aria-label="Add router" onClick={() => setEditing('new')}>
+              <svg viewBox="0 0 10 10" aria-hidden="true">
+                <path d="M5 0.5v9M0.5 5h9" />
+              </svg>
             </button>
           </div>
           {state.loaded && state.profiles.length === 0 && <div className="nav-empty">None</div>}
@@ -281,7 +283,7 @@ export function App() {
             )}
             {tab === 'dhcp' && <DhcpView data={state.data} onShowConnections={showConnections} />}
             {tab === 'interfaces' && <InterfacesView data={state.data} />}
-            {tab === 'log' && <RouterLogView routerId={profile.id} />}
+            {tab === 'log' && <RouterLogView routerId={profile.id} leases={state.data.leases?.rows} />}
           </>
         ) : (
           <ConnectPanel profile={profile} status={status} summary={state.summaries[profile.id]} onEdit={() => setEditing(profile)} />

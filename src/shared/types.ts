@@ -275,6 +275,8 @@ export interface RouterLogEntry {
   time: string
   topics: string[]
   message: string
+  /** A firewall line, read like the firewall records in Logs. */
+  firewall?: Omit<LogEntry, 'id' | 't'>
 }
 
 export interface LeaseRow {

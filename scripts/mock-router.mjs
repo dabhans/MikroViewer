@@ -491,7 +491,13 @@ const LOG_EVENTS = [
     const d = pick(devices)
     return ['wireless,info', `${d.mac}@wifi1: disconnected, group key timeout`]
   },
+  () => {
+    const d = pick(devices)
+    return ['dhcp,info', `defconf deassigned ${d.address} for ${d.mac} ${d.host ?? ''}`.trim()]
+  },
   () => ['system,error,critical', `login failure for user root from 103.77.${Math.floor(between(1, 250))}.${Math.floor(between(1, 250))} via ssh`],
+  () => ['system,info,account', `user admin logged ${rand() < 0.5 ? 'in' : 'out'} from ${devices[0].address} via winbox`],
+  () => ['system,info', `filter rule changed by winbox-3.41/tcp-msg(winbox):admin@${devices[0].address}/action:118 (/ip firewall filter set *5 log=yes)`],
   () => ['wireguard,info', 'wireguard1: peer handshake completed']
 ]
 

@@ -2,10 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { LogAction, LogEntry, LogQueryResult, SessionEndReason } from '../../../shared/types'
 import { FIELDS, addTerm, compileQuery, filterTerm, type LogPredicate } from '../../../shared/logquery'
 import { Cell, DataTable, copyItems, type Column } from '../components/DataTable'
-import { ContextMenu, Panel, type MenuItem, type MenuState } from '../components/Controls'
+import { CloseButton, ContextMenu, Panel, type MenuItem, type MenuState } from '../components/Controls'
 import { FirewallLoggingDialog, nothingLogs, useFirewallStatus } from '../components/FirewallLogging'
 import { Timeline } from '../components/Timeline'
 import { cleanError } from '../components/RouterForm'
+import { explainRecord } from '../explain'
 import { formatBytes, formatDateTime, formatDuration, formatNumber, formatTime, ipSortKey } from '../format'
 import { serviceLabel, serviceName } from '../services'
 import { storageGet, storageSet } from '../storage'
@@ -191,11 +192,7 @@ function Details({ e, onClose, height, onResizeStart }: { e: LogEntry; onClose: 
       className="details"
       style={{ height }}
       title={`${e.type === 'session' ? 'Session' : 'Firewall record'} · ${formatDateTime(e.t)}`}
-      aside={
-        <button className="modal-close" onClick={onClose} title="Close">
-          ×
-        </button>
-      }
+      aside={<CloseButton onClick={onClose} />}
     >
       <div>
         <h3>Traffic</h3>
@@ -215,19 +212,25 @@ function Details({ e, onClose, height, onResizeStart }: { e: LogEntry; onClose: 
         />
       </div>
       {e.type === 'session' ? (
-        <div>
-          <h3>Session</h3>
-          <KV
-            items={[
-              ['Start', start],
-              ['End', end],
-              ['Duration', durationText(e) ?? 'Unknown'],
-              ['End reason', e.endReason ? END_REASON[e.endReason] : undefined],
-              ['Received', e.rxBytes !== undefined ? formatBytes(e.rxBytes) : undefined],
-              ['Sent', e.txBytes !== undefined ? formatBytes(e.txBytes) : undefined]
-            ]}
-          />
-        </div>
+        <>
+          <div>
+            <h3>Session</h3>
+            <KV
+              items={[
+                ['Start', start],
+                ['End', end],
+                ['Duration', durationText(e) ?? 'Unknown'],
+                ['End reason', e.endReason ? END_REASON[e.endReason] : undefined],
+                ['Received', e.rxBytes !== undefined ? formatBytes(e.rxBytes) : undefined],
+                ['Sent', e.txBytes !== undefined ? formatBytes(e.txBytes) : undefined]
+              ]}
+            />
+          </div>
+          <div>
+            <h3>What happened</h3>
+            <p className="explain">{explainRecord(e)}</p>
+          </div>
+        </>
       ) : (
         <>
           <div>
@@ -247,12 +250,16 @@ function Details({ e, onClose, height, onResizeStart }: { e: LogEntry; onClose: 
               ]}
             />
           </div>
-          {e.message && (
-            <div>
-              <h3>Message</h3>
-              <div className="raw">{e.message}</div>
-            </div>
-          )}
+          <div>
+            <h3>What happened</h3>
+            <p className="explain">{explainRecord(e)}</p>
+            {e.message && (
+              <>
+                <h3>Router's log line</h3>
+                <div className="raw">{e.message}</div>
+              </>
+            )}
+          </div>
         </>
       )}
       </Panel>
@@ -569,7 +576,7 @@ export function LogsView({ routerId, connected }: { routerId: string; connected:
         </div>
       )}
 
-      <div className="toolbar">
+      <div className="toolbar status-row">
         {inputError ? <span className="query-error">{inputError}</span> : error ? <span className="query-error">{error}</span> : null}
         {buffered > 0 && (
           <button

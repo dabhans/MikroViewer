@@ -79,10 +79,8 @@ export function SettingsDialog({ settings, onChange, onClose }: Props) {
           </select>
         </div>
         <span className="lbl">Storage</span>
-        <div className="row">
-          <span className="num" style={{ minWidth: 70 }}>
-            {storage === null ? '…' : formatBytes(storage)}
-          </span>
+        <span className="num">{storage === null ? '…' : formatBytes(storage)}</span>
+        <div className="row full">
           <button className="btn" onClick={run(() => window.api.openLogFolder())}>
             Open folder
           </button>

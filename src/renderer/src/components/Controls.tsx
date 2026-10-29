@@ -26,6 +26,17 @@ export function ButtonGroup<T extends string>({ value, options, onChange }: { va
   )
 }
 
+/** The × in a dialog or panel head. Drawn rather than typed, so it sits in the middle of the button. */
+export function CloseButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button className="modal-close" onClick={onClick} title="Close" aria-label="Close">
+      <svg viewBox="0 0 10 10" aria-hidden="true">
+        <path d="M1 1 9 9M9 1 1 9" />
+      </svg>
+    </button>
+  )
+}
+
 export function Modal({ title, onClose, children, wide, width }: { title: string; onClose: () => void; children: ReactNode; wide?: boolean; width?: number }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -40,9 +51,7 @@ export function Modal({ title, onClose, children, wide, width }: { title: string
       <div className={`modal${wide ? ' wide' : ''}`} style={width ? { width: `min(${width}px, calc(100vw - 40px))` } : undefined} role="dialog" aria-modal="true" aria-label={title}>
         <div className="panel-head">
           {title}
-          <button className="modal-close" onClick={onClose} title="Close">
-            ×
-          </button>
+          <CloseButton onClick={onClose} />
         </div>
         {children}
       </div>
