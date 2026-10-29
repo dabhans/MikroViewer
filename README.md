@@ -11,7 +11,7 @@ A desktop program for monitoring MikroTik routers. It runs entirely on your own 
 - **Logs** – a firewall-style log of ended sessions and firewall records, with search, time ranges and a timeline (see [Logs](#logs))
 - **DHCP Leases** – IP, MAC, hostname, status and expiry
 - **Interfaces** – status, current traffic and totals
-- **System Log** – the router's own log
+- **System Log** – the router's own log in plain language: who logged in, which devices got an address or joined the Wi-Fi, and what the firewall blocked. **Original messages** shows the router's own wording.
 
 Several routers can be added. They stay connected at the same time, and you switch between them in the menu on the left. Right-click a router to connect, disconnect or edit it.
 
@@ -20,8 +20,8 @@ Right-click any cell in a table to copy its value, or the whole row. The mouse's
 | Overview | Logs |
 | --- | --- |
 | ![Overview](docs/screenshots/overview.png) | ![Logs](docs/screenshots/logs.png) |
-| **Firewall Logging** | **Dark theme** |
-| ![Firewall Logging](docs/screenshots/firewall-logging.png) | ![Dark theme](docs/screenshots/logs-dark.png) |
+| **Firewall Logging** | **System Log** (dark theme) |
+| ![Firewall Logging](docs/screenshots/firewall-logging.png) | ![System Log in the dark theme](docs/screenshots/system-log-dark.png) |
 
 The screenshots show the simulated router that comes with the project ([Demo](#demo-without-a-router)).
 
@@ -97,7 +97,7 @@ Give each logging rule its own log prefix, so MikroViewer can tell which rule wr
 
 ### Searching
 
-Pick a time range, type a query and press Enter. Right-click a cell to filter by (or exclude) its value, drag across the timeline to zoom in, and click a record to see all its details – drag the bar above the details to make them taller. **Queries** has ready-made searches, and **?** lists every field.
+Pick a time range, type a query and press Enter. Right-click a cell to filter by (or exclude) its value, drag across the timeline to zoom in, and click a record to see all its details, with what happened explained in plain words – drag the bar above the details to make them taller. **Queries** has ready-made searches, and **?** lists every field.
 
 | Query | Finds |
 | --- | --- |
